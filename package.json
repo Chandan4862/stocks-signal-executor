@@ -7,9 +7,13 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node src/index.ts",
+    "dev:watch": "nodemon",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "script:fetch-instruments": "ts-node src/scripts/fetchInstruments.ts"
   },
   "dependencies": {
     "axios": "^1.6.8",
@@ -22,7 +26,11 @@
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/pg": "^8.16.0",
+    "ioredis-mock": "^8.10.1",
+    "nock": "^13.5.2",
+    "nodemon": "^3.0.1",
     "ts-node": "^10.9.2",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vitest": "^1.6.0"
   }
 }

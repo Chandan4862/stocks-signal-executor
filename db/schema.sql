@@ -38,3 +38,29 @@ CREATE TABLE IF NOT EXISTS token_store (
   expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS instrument_list_nse_eq (
+  id BIGSERIAL PRIMARY KEY,
+  exch_id TEXT NOT NULL,
+  security_id TEXT NOT NULL,
+  instrument TEXT,
+  underlying_symbol TEXT,
+  display_name TEXT,
+  instrument_type TEXT,
+  series TEXT,
+  fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS instrument_list_nse_eq (
+  id BIGSERIAL PRIMARY KEY,
+  exch_id TEXT NOT NULL,
+  security_id TEXT NOT NULL,
+  instrument TEXT,
+  underlying_symbol TEXT,
+  display_name TEXT,
+  instrument_type TEXT,
+  series TEXT,
+  fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_instrument_security_id ON instrument_list_nse_eq (security_id);
+CREATE INDEX IF NOT EXISTS idx_instrument_underlying_symbol ON instrument_list_nse_eq (underlying_symbol);

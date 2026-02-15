@@ -15,6 +15,7 @@ export class TokenService {
   ) {}
 
   async getToken(): Promise<string | null> {
+    await this.store.redis.set(RedisKeys.brokerToken(), "test", "EX", 1000); // Test Redis connectivity
     const redisToken = await this.store.redis.get(RedisKeys.brokerToken());
     if (redisToken) return redisToken;
     const res = await this.store.pg.query(

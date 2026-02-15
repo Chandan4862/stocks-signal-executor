@@ -2,6 +2,11 @@ import { AppConfig, AppConfigSchema } from "./schema";
 
 export function loadConfig(): AppConfig {
   const env = process.env;
+  const bool = (v: any, def: boolean) => {
+    if (v === undefined || v === null || v === "") return def;
+    const s = String(v).toLowerCase();
+    return s === "1" || s === "true" || s === "yes";
+  };
   const parseResult = AppConfigSchema.safeParse({
     kite: {
       userId: env.KITE_USER_ID,
@@ -30,7 +35,9 @@ export function loadConfig(): AppConfig {
       defaultChatId: env.TELEGRAM_CHAT_ID,
     },
     pollingIntervalMs: Number(env.POLLING_INTERVAL_MS || 15000),
-    maxTradeCapital: Number(env.MAX_TRADE_CAPITAL || 25000),
+    maxTradeCapital: Number(env.MAX_TRADE_CAPITAL || 10000),
+    maxActiveTrades: Number(env.MAX_ACTIVE_TRADES || 10),
+    useSuperOrder: bool(env.USE_SUPER_ORDER, true),
     tsl: {
       incrementRs: Number(env.TSL_INCREMENT_RS || 2),
       initialSlPct: Number(env.TSL_INITIAL_SL_PCT || 3),

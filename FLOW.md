@@ -54,7 +54,8 @@ This document explains how the system consumes Active/Closed trade feeds, places
 ## Active → BUY + Initial SL-M
 
 - Entry price resolution (priority): `active.meta.entry_price` → first executed fill in `active.history` → `active.cmp`.
-- Quantity: choose `capital = active.meta.max_capital` (if present) else `MAX_TRADE_CAPITAL`; compute `qty = floor(capital / entry_price)`.
+- Portfolio cap: if current OPEN trades ≥ `MAX_ACTIVE_TRADES` (default 10), skip new BUYs.
+- Quantity: choose `capital = active.meta.max_capital` (if present) else `MAX_TRADE_CAPITAL` (default Rs.10000); compute `qty = floor(capital / entry_price)`.
 - BUY guard: skip if `idempotency:buy:{id}` exists; set `correlationId = buy:<id>`.
 - BUY order (MARKET):
   - `placeOrder({ dhanClientId, correlationId, transactionType: BUY, exchangeSegment, productType, orderType: MARKET, validity: DAY, securityId: active.instrument.securityId, quantity: qty })`
@@ -63,7 +64,7 @@ This document explains how the system consumes Active/Closed trade feeds, places
   - Redis: `idempotency:buy:{id}`, `trade:{id}` = { securityId, entry_price, qty, state: OPEN }.
   - DB: `trades` upsert (entry data, state OPEN); `audit_logs` (BUY request/response).
 - Initial SL-M:
-  - Compute trigger via `TSLService`: from `TSL_INITIAL_SL_PCT` or `active.meta.initial_sl_pct`.
+  - Trigger: use `ActiveTrade.stoploss_price` if provided; otherwise compute via `TSLService` from `TSL_INITIAL_SL_PCT` or `active.meta.initial_sl_pct`.
   - Guard `idempotency:sl:{id}`; `correlationId = sl:<id>`.
   - `placeOrder({ orderType: STOP_LOSS_MARKET, transactionType: SELL, triggerPrice })` for full `qty`.
   - Redis: `tsl:{id}` = { slOrderId, triggerPrice, lastUpdatedAt }.

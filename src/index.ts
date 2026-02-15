@@ -4,11 +4,7 @@ import { Scheduler } from "./services/scheduler";
 
 async function main() {
   const config = loadConfig();
-  console.log("Stocks Signal Executor booting with config:", {
-    pollingIntervalMs: config.pollingIntervalMs,
-    maxTradeCapital: config.maxTradeCapital,
-    tsl: config.tsl,
-  });
+  console.log("Stocks Signal Executor booting with config:", config);
 
   const scheduler = new Scheduler(config);
   scheduler.start();

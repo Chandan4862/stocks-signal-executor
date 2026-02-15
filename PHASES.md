@@ -27,10 +27,11 @@ This single document captures all phases: current foundation, near-term implemen
   - Inputs: normalized `ActiveTrade` (e.g., `id`, `sc_id`, `instrument.securityId`, `cmp`, `meta`, epochs) and `ClosedTrade` (e.g., `id`, `exit_price`, `history`, `meta`, `closed_on_dt`).
   - Discovery & Cache: Poll upstream Active/Closed; normalize; cache `trade:{id}` in Redis with `securityId`, `entry_price`, `quantity`, and current state for quick reconciliation.
   - New Active:
+    - Portfolio Cap: skip new BUYs if current OPEN trades ≥ `MAX_ACTIVE_TRADES` (config, default 10).
     - Entry Price: prefer `meta.entry_price`; else use first executed fill from `history` if present; fallback to `cmp`.
-    - Quantity: prefer `meta.max_capital`; else config `MAX_TRADE_CAPITAL`; compute `qty = floor(capital / entry_price)`.
+    - Quantity: prefer `meta.max_capital`; else config `MAX_TRADE_CAPITAL` (default Rs.10000); compute `qty = floor(capital / entry_price)`.
     - BUY Placement: guard `idempotency:buy:{id}`; set `correlationId = buy:<id>`; place BUY MARKET with `securityId`, `qty`, configured `productType`; persist order and set guard key.
-    - Initial SL-M: compute trigger via `TSLService` using `entry_price` and `TSL_INITIAL_SL_PCT` (or `meta.initial_sl_pct` if provided); guard `idempotency:sl:{id}`; set `correlationId = sl:<id>`; place SL-M SELL for `qty`; store `slOrderId` and current `triggerPrice` in Redis `tsl:{id}`.
+    - Initial SL-M: use `ActiveTrade.stoploss_price` if provided; otherwise compute via `TSLService` using `entry_price` and `TSL_INITIAL_SL_PCT` (or `meta.initial_sl_pct`); guard `idempotency:sl:{id}`; set `correlationId = sl:<id>`; place SL-M SELL for `qty`; store `slOrderId` and current `triggerPrice` in Redis `tsl:{id}`.
   - TSL Adjustments:
     - When `cmp` advances past configured steps (`TSL_STEP_RS` or `%`), recompute `nextStopLoss` below `cmp`; modify existing SL via `slOrderId` (or cancel + re-place if modify fails).
     - Guard each upgrade with `idempotency:tsl:{id}:{trigger}`; update `tsl:{id}` snapshot.

@@ -25,4 +25,10 @@ export enum LifecycleEvents {
   ACTIVE_TRADE_SYNCED = "ACTIVE_TRADE_SYNCED",
   CLOSED_TRADE_SYNCED = "CLOSED_TRADE_SYNCED",
   ERROR_OCCURRED = "ERROR_OCCURRED",
+  SKIP_TRADE = "SKIP_TRADE",
+}
+
+export enum InstrumentType {
+  CASH = "cash",
+  OPTIONS = "options",
 }

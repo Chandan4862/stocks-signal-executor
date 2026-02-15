@@ -47,7 +47,7 @@ This document explains the overall flow of the implementation and what each file
 
 - `src/config/schema.ts`: Zod schemas for app config, including `tsl` parameters; strongly typed `AppConfig` export.
 - `src/config/index.ts`: Loads `.env` via `dotenv`, validates against schema, returns typed `AppConfig`.
-- `.env.example`: Credential and parameter placeholders (trading API credentials, APIs, Redis, Postgres, Telegram, polling, capital, TSL, pre-market refresh window).
+- `.env.example`: Credential and parameter placeholders (trading API credentials, APIs, Redis, Postgres, Telegram, polling, per-trade capital `MAX_TRADE_CAPITAL` (default 10000), portfolio cap `MAX_ACTIVE_TRADES` (default 10), TSL, pre-market refresh window).
 
 ## State & Persistence
 

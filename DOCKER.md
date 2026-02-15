@@ -64,7 +64,7 @@ Key vars in `.env.docker`:
 
 - Broker/Dhan: `DHAN_CLIENT_ID`, optional `DHAN_ACCESS_TOKEN`.
 - Feeds: `ACTIVE_TRADES_URL`, `CLOSED_TRADES_URL`.
-- Storage: `REDIS_URL` (defaults to `redis://redis:6379`), `PG_HOST=postgres`, `PG_PORT=5432`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`.
+- Storage: `REDIS_URL` (defaults to `redis://redis:6379`), `PG_HOST=postgres`, `PG_PORT=7432`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`.
 - Telegram: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 - Bot config: `POLLING_INTERVAL_MS`, `MAX_TRADE_CAPITAL`, `TSL_*`.
 
@@ -89,6 +89,40 @@ docker compose logs -f app
 # Rebuild after code changes
 docker compose build app && docker compose up -d app
 ```
+
+## Run Tests with Docker
+
+The simplest way is to use an ephemeral Node container that mounts your workspace, installs dev dependencies, and runs Vitest:
+
+```sh
+# From project root
+docker run --rm -it \
+  -v "$PWD":/app \
+  -w /app \
+  node:20-alpine \
+  sh -lc "npm ci && npm run test:run"
+```
+
+- This uses the official Node image, avoids modifying the app container (which installs only production deps), and runs tests in isolation.
+- If your tests need services (Redis/Postgres), bring them up first:
+
+```sh
+docker compose up -d redis postgres
+docker run --rm -it -v "$PWD":/app -w /app node:20-alpine sh -lc "npm ci && npm run test:run"
+```
+
+### Optional: Test Stage in Dockerfile
+
+If you prefer a dedicated test image, add a test stage to your Dockerfile that copies the `tests/` folder and installs dev dependencies, then run:
+
+```sh
+# Build the test image (after adding a test stage)
+docker build --target builder -t stocks-executor-test .
+# Execute tests inside the image
+docker run --rm -it stocks-executor-test sh -lc "npm run test:run"
+```
+
+Note: The current Dockerfile does not copy `tests/`; the ephemeral approach above works without changes.
 
 ## Notes
 

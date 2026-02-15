@@ -1,19 +1,30 @@
+# Running via docker compose → the container gets vars from .env.docker + overrides from the environment: block.
+# Your local .env file (if it exists) is not injected into the container — it's only used for ${VAR} interpolation in docker-compose.yml.
+# A local .env does not get overwritten by .env.docker or vice versa — they serve different purposes.
+
 version: "3.9"
 
 services:
   app:
-    build: .
+    # Use builder stage so dev dependencies (ts-node/nodemon) are available
+    build:
+      context: .
+      target: builder
     container_name: stocks-executor-app
     env_file:
       - .env.docker
     environment:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       PG_HOST: ${PG_HOST:-postgres}
-      PG_PORT: ${PG_PORT:-5432}
+      PG_PORT: ${PG_PORT:-7432}
       PG_DATABASE: ${PG_DATABASE:-stocks_executor}
       PG_USER: ${PG_USER:-postgres}
       PG_PASSWORD: ${PG_PASSWORD:-postgres}
       POLLING_INTERVAL_MS: ${POLLING_INTERVAL_MS:-15000}
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+    command: ["sh", "-lc", "[ -d node_modules ] || npm ci; npm run dev:watch"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -28,6 +39,8 @@ services:
       POSTGRES_DB: ${PG_DATABASE:-stocks_executor}
       POSTGRES_USER: ${PG_USER:-postgres}
       POSTGRES_PASSWORD: ${PG_PASSWORD:-postgres}
+    ports:
+      - "${PG_PORT:-7432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
@@ -44,6 +57,8 @@ services:
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis-data:/data
+    ports:
+      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -54,3 +69,4 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  node_modules:

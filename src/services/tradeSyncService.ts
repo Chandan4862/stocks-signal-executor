@@ -8,18 +8,368 @@ import axios from "axios";
 import type { AppConfig } from "../config/schema";
 import type { ActiveTrade } from "../models/activeTrade";
 import type { ClosedTrade } from "../models/closedTrade";
+import type { ValidatedTrade } from "../models/validatedTrade";
+import { StateStore } from "./stateStore";
+import {
+  DhanService,
+  PlaceOrderRequest,
+  PlaceOrderResponse,
+  PlaceSuperOrderRequest,
+} from "./dhanService";
+import { QuantityResolverService } from "./quantityResolverService";
+import { TSLService } from "./tslService";
+import { AuditLogService } from "./auditLogService";
+import { InstrumentLookupService } from "./instrumentLookupService";
+import { RedisKeys } from "../state/redisKeys";
+import { InstrumentType, LifecycleEvents } from "../enums/trade";
+import { symbol } from "zod";
 
 export class TradeSyncService {
   constructor(private cfg: AppConfig) {}
 
   async fetchActiveTrades(): Promise<ActiveTrade[]> {
     const { data } = await axios.get(this.cfg.apis.activeTradesUrl);
-    return (data as any[]).map(this.normalizeActive);
+    const list = Array.isArray(data) ? data : (data?.list?.data ?? []);
+    if (Array.isArray(list) && list.length > 0) {
+      return (list as any[]).map(this.normalizeActive);
+    }
+    return list.map(this.normalizeActive);
   }
 
   async fetchClosedTrades(): Promise<ClosedTrade[]> {
     const { data } = await axios.get(this.cfg.apis.closedTradesUrl);
     return (data as any[]).map(this.normalizeClosed);
+  }
+
+  // Phase 2: Run BUY + initial SL placement for newly discovered active trades
+  async runBuyAndInitialSl(
+    store: StateStore,
+    dhan: DhanService,
+    qtyResolver: QuantityResolverService,
+    tslService: TSLService,
+    audit: AuditLogService,
+    instrumentLookup: InstrumentLookupService,
+  ): Promise<void> {
+    const actives = await this.fetchActiveTrades();
+    let openCount = await this.getOpenTradeCount(store);
+
+    for (const at of actives) {
+      // Only process cash instruments
+      if (!(await this.isCashInstrument(at, audit))) continue;
+
+      const id = at.id;
+      const gotLock = await store.redis.set(
+        RedisKeys.lockTrade(id),
+        "1",
+        "PX",
+        5000,
+        "NX",
+      );
+      if (!gotLock) continue;
+
+      try {
+        // Portfolio cap check
+        if (await this.isPortfolioCapReached(openCount, id, audit)) continue;
+
+        // Idempotency guard
+        const buyGuard = await store.redis.get(RedisKeys.idempotencyBuy(id));
+        if (buyGuard) continue;
+
+        // Validate & resolve trade params
+        const validated = await this.validateAndResolveTrade(
+          at,
+          qtyResolver,
+          tslService,
+          audit,
+          instrumentLookup,
+        );
+        if (!validated) continue;
+
+        // Place order (super or legacy)
+        const buyRes = await this.placeEntryOrder(dhan, validated, at);
+
+        // Persist state (idempotency, snapshot, audit)
+        await this.persistBuyState(store, audit, validated, buyRes);
+        openCount++;
+
+        // Legacy mode: place separate SL leg
+        if (!this.cfg.useSuperOrder) {
+          await this.placeLegacyStopLoss(store, dhan, audit, validated);
+        }
+      } catch (err: any) {
+        await audit.record(LifecycleEvents.ERROR_OCCURRED, {
+          id: at.id,
+          error: String(err?.message || err),
+        });
+      } finally {
+        await store.redis.del(RedisKeys.lockTrade(id));
+      }
+    }
+  }
+
+  // ─── Extracted Private Methods ──────────────────────────────────────
+
+  /**
+   * Query Postgres for the count of currently ENTERED (open) trades.
+   */
+  private async getOpenTradeCount(store: StateStore): Promise<number> {
+    try {
+      const res = await store.pg.query(
+        "SELECT COUNT(*) AS cnt FROM trades WHERE state = $1",
+        ["ENTERED"],
+      );
+      const raw = res.rows?.[0]?.cnt;
+      return raw !== undefined ? Number(raw) : 0;
+    } catch (error: any) {
+      console.error("Error fetching open trade count:", error.message);
+      return 0;
+    }
+  }
+
+  /**
+   * Guard: returns true if the ActiveTrade is a cash instrument.
+   * Logs SKIP_TRADE audit for non-cash.
+   */
+  private async isCashInstrument(
+    at: ActiveTrade,
+    audit: AuditLogService,
+  ): Promise<boolean> {
+    if (at.instrument_type !== InstrumentType.CASH) {
+      await audit.record(
+        LifecycleEvents.SKIP_TRADE,
+        {
+          id: at.id,
+          reason: "Skipping non-cash instrument",
+          instrument_type: at.instrument_type,
+        },
+        false,
+      );
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Guard: returns true if portfolio cap is reached. Logs audit.
+   */
+  private async isPortfolioCapReached(
+    openCount: number,
+    id: number,
+    audit: AuditLogService,
+  ): Promise<boolean> {
+    if (openCount >= this.cfg.maxActiveTrades) {
+      await audit.record(LifecycleEvents.ERROR_OCCURRED, {
+        id,
+        reason: "Portfolio cap reached",
+        openCount,
+        maxActiveTrades: this.cfg.maxActiveTrades,
+      });
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Validate & resolve: securityId, entryPrice, qty, slTrigger, target.
+   * Returns ValidatedTrade or null to skip.
+   */
+  private async validateAndResolveTrade(
+    at: ActiveTrade,
+    qtyResolver: QuantityResolverService,
+    tslService: TSLService,
+    audit: AuditLogService,
+    instrumentLookup: InstrumentLookupService,
+  ): Promise<ValidatedTrade | null> {
+    const id = at.id;
+    const symbol = String(at.sc_symbol || "").toUpperCase();
+
+    // Resolve securityId from instrument_list_nse_eq
+    if (!symbol) {
+      await audit.record(LifecycleEvents.ERROR_OCCURRED, {
+        id,
+        reason: "Missing sc_symbol — cannot resolve securityId",
+      });
+      return null;
+    }
+
+    const securityId = await instrumentLookup.resolveSecurityId(symbol);
+    if (!securityId) {
+      await audit.record(LifecycleEvents.ERROR_OCCURRED, {
+        id,
+        reason: "No instrument found in instrument_list_nse_eq",
+        symbol,
+      });
+      return null;
+    }
+
+    // Resolve entry price
+    const entryPrice =
+      (typeof at.entry_price === "number" ? at.entry_price : undefined) ??
+      at.cmp ??
+      0;
+    if (!entryPrice || entryPrice <= 0) {
+      audit.record(LifecycleEvents.ERROR_OCCURRED, {
+        id,
+        reason: "Invalid entry price",
+        entryPrice,
+      });
+      return null;
+    }
+
+    // Resolve capital & quantity
+    const capital = (at as any)?.meta?.max_capital ?? this.cfg.maxTradeCapital;
+    const qty = qtyResolver.deriveQty(entryPrice, Number(capital));
+    if (!qty || qty <= 0) {
+      audit.record(LifecycleEvents.ERROR_OCCURRED, {
+        id,
+        reason: "Derived quantity is 0",
+        entryPrice,
+        capital,
+      });
+      return null;
+    }
+
+    // Resolve SL trigger & target
+    const slTrigger =
+      typeof at.stoploss_price === "number" && at.stoploss_price > 0
+        ? at.stoploss_price
+        : tslService.initialStopLoss(entryPrice);
+    const target =
+      typeof at.target_price_1 === "number" && at.target_price_1 > 0
+        ? at.target_price_1
+        : undefined;
+
+    return {
+      id,
+      securityId,
+      symbol,
+      entryPrice,
+      quantity: qty,
+      capital,
+      slTrigger,
+      target,
+    };
+  }
+
+  /**
+   * Place entry order: super order (BUY+SL+target combined) or legacy BUY MARKET.
+   */
+  private async placeEntryOrder(
+    dhan: DhanService,
+    v: ValidatedTrade,
+    at: ActiveTrade,
+  ): Promise<PlaceOrderResponse> {
+    if (this.cfg.useSuperOrder) {
+      const superReq: PlaceSuperOrderRequest = {
+        dhanClientId: this.cfg.dhan.clientId,
+        correlationId: `buy:${v.id}`,
+        transactionType: "BUY",
+        exchangeSegment: "NSE_EQ",
+        productType: "CNC",
+        orderType: "LIMIT",
+        securityId: v.securityId,
+        quantity: v.quantity,
+        price: v.entryPrice,
+        targetPrice: v.target,
+        stopLossPrice: v.slTrigger,
+        trailingJump: this.cfg.tsl.incrementRs,
+      };
+      return dhan.placeSuperOrder(superReq);
+    }
+
+    const buyReq: PlaceOrderRequest = {
+      dhanClientId: this.cfg.dhan.clientId,
+      correlationId: `buy:${v.id}`,
+      transactionType: "BUY",
+      exchangeSegment: "NSE_EQ",
+      productType: "CNC",
+      orderType: "MARKET",
+      validity: "DAY",
+      securityId: v.securityId,
+      quantity: v.quantity,
+    };
+    return dhan.placeOrder(buyReq);
+  }
+
+  /**
+   * Persist BUY state: set idempotency key, cache trade snapshot, record audit.
+   */
+  private async persistBuyState(
+    store: StateStore,
+    audit: AuditLogService,
+    v: ValidatedTrade,
+    buyRes: PlaceOrderResponse,
+  ): Promise<void> {
+    await store.redis.set(RedisKeys.idempotencyBuy(v.id), "1", "EX", 86400);
+    await store.redis.set(
+      RedisKeys.trade(v.id),
+      JSON.stringify({
+        id: v.id,
+        securityId: v.securityId,
+        entry_price: v.entryPrice,
+        quantity: v.quantity,
+        state: "OPEN",
+        buyOrderId: buyRes.orderId,
+        symbol: v.symbol,
+      }),
+      "EX",
+      86400,
+    );
+    await audit.record(LifecycleEvents.BUY_PLACED, {
+      id: v.id,
+      orderId: buyRes.orderId,
+      securityId: v.securityId,
+      entryPrice: v.entryPrice,
+      quantity: v.quantity,
+    });
+  }
+
+  /**
+   * Legacy mode only: place a separate SL-M (Stop Loss Market) order after BUY.
+   */
+  private async placeLegacyStopLoss(
+    store: StateStore,
+    dhan: DhanService,
+    audit: AuditLogService,
+    v: ValidatedTrade,
+  ): Promise<void> {
+    const slGuardSet = await store.redis.set(
+      RedisKeys.idempotencySl(v.id),
+      "1",
+      "EX",
+      86400,
+      "NX",
+    );
+    if (!slGuardSet) return;
+
+    const slReq: PlaceOrderRequest = {
+      dhanClientId: this.cfg.dhan.clientId,
+      correlationId: `sl:${v.id}`,
+      transactionType: "SELL",
+      exchangeSegment: "NSE_EQ",
+      productType: "CNC",
+      orderType: "STOP_LOSS_MARKET",
+      validity: "DAY",
+      securityId: v.securityId,
+      quantity: v.quantity,
+      triggerPrice: v.slTrigger,
+    };
+    const slRes = await dhan.placeOrder(slReq);
+    await store.redis.set(
+      RedisKeys.tsl(v.id),
+      JSON.stringify({
+        slOrderId: slRes.orderId,
+        triggerPrice: v.slTrigger,
+        lastUpdatedAt: Date.now(),
+      }),
+      "EX",
+      86400,
+    );
+    await audit.record(LifecycleEvents.GTT_PLACED, {
+      id: v.id,
+      req: slReq,
+      res: slRes,
+    });
   }
 
   // Normalize API payloads (Phase 1): parse strings -> numbers & parse meta_data
@@ -43,13 +393,17 @@ export class TradeSyncService {
     const sc_symbol = String(
       raw.sc_symbol || meta?.sc_symbol || "",
     ).toUpperCase();
-
+    const instrument_type_raw = String(
+      raw.instrument_type || "cash",
+    ).toLowerCase();
+    const instrument_type =
+      instrument_type_raw === InstrumentType.OPTIONS ? "options" : "cash";
     return {
       id: Number(raw.id),
       reco_id: raw.reco_id ? Number(raw.reco_id) : undefined,
       user_id: raw.user_id ? Number(raw.user_id) : undefined,
       asset_class: "equity",
-      instrument_type: "cash",
+      instrument_type,
       instrument: raw.instrument ? String(raw.instrument) : undefined,
       reco_type:
         String(raw.reco_type).toLowerCase() === "sell" ? "sell" : "buy",
@@ -139,6 +493,12 @@ export class TradeSyncService {
     ).toUpperCase();
     const exitPrice = asNum(raw.exit_price ?? meta?.exit_price);
     const closedOn = raw.closed_on_dt || meta?.closed_on || undefined;
+
+    const instrument_type_raw = String(
+      raw.instrument_type || "cash",
+    ).toLowerCase();
+    const instrument_type =
+      instrument_type_raw === InstrumentType.OPTIONS ? "options" : "cash";
 
     return {
       id: Number(raw.id),

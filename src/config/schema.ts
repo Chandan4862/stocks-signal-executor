@@ -37,6 +37,8 @@ export const AppConfigSchema = z.object({
   }),
   pollingIntervalMs: z.number().int().positive(),
   maxTradeCapital: z.number().positive(),
+  maxActiveTrades: z.number().int().positive(),
+  useSuperOrder: z.boolean(),
   tsl: TslConfigSchema,
 });
 

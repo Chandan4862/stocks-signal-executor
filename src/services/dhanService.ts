@@ -36,6 +36,21 @@ export interface PlaceOrderResponse {
   orderStatus: string;
 }
 
+export interface PlaceSuperOrderRequest {
+  dhanClientId: string;
+  correlationId?: string;
+  transactionType: TransactionType; // BUY/SELL
+  exchangeSegment: string; // e.g., NSE_EQ
+  productType: string; // CNC
+  orderType: OrderType; // LIMIT or MARKET
+  securityId: string;
+  quantity: number;
+  price?: number;
+  targetPrice?: number;
+  stopLossPrice: number;
+  trailingJump?: number; // absolute Rs jump for trailing
+}
+
 export class DhanService {
   private http?: AxiosInstance;
 
@@ -60,9 +75,26 @@ export class DhanService {
   }
 
   async placeOrder(req: PlaceOrderRequest): Promise<PlaceOrderResponse> {
-    const http = await this.ensureHttp();
-    const { data } = await http.post<PlaceOrderResponse>("/orders", req);
-    return data;
+    // const http = await this.ensureHttp();
+    // const { data } = await http.post<PlaceOrderResponse>("/orders", req);
+    // return data;
+    console.log("DhanService.placeOrder called with:", req);
+    return {
+      orderStatus: "success",
+      orderId: "DhanOrder12345",
+    };
+  }
+
+  async placeSuperOrder(
+    req: PlaceSuperOrderRequest,
+  ): Promise<PlaceOrderResponse> {
+    // const http = await this.ensureHttp();
+    // const { data } = await http.post<PlaceOrderResponse>("/super/orders", req);
+    // return data;
+    return {
+      orderId: String(req.correlationId || "superOrder"),
+      orderStatus: "success",
+    };
   }
 
   async modifyOrder(

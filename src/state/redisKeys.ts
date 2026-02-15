@@ -10,9 +10,13 @@
 export const RedisKeys = {
   tokenForDate: (dateStr: string) => `token:${dateStr}`,
   brokerToken: () => `broker:token`,
-  idempotency: (action: "buy" | "sell" | "gtt", id: number | string) =>
-    `idempotency:${action}:${id}`,
+  idempotencyBuy: (id: number | string) => `idempotency:buy:${id}`,
+  idempotencySell: (id: number | string) => `idempotency:sell:${id}`,
+  idempotencySl: (id: number | string) => `idempotency:sl:${id}`,
+  idempotencyTsl: (id: number | string, trigger: number | string) =>
+    `idempotency:tsl:${id}:${trigger}`,
   trade: (id: number | string) => `trade:${id}`,
   tsl: (id: number | string) => `tsl:${id}`,
+  lockTrade: (id: number | string) => `lock:trade:${id}`,
   marketHealth: () => `health:market`,
 };
