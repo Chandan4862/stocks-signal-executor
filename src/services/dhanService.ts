@@ -39,6 +39,43 @@ export interface PlaceOrderResponse {
   orderStatus: string;
 }
 
+export type OrderFlag = "SINGLE" | "OCO";
+export type LegName = "ENTRY_LEG" | "TARGET_LEG" | "STOP_LOSS_LEG";
+
+export interface PlaceForeverOrderRequest {
+  dhanClientId: string;
+  correlationId?: string;
+  orderFlag: OrderFlag;
+  transactionType: TransactionType;
+  exchangeSegment: string;
+  productType: string;
+  orderType: OrderType;
+  validity: Validity;
+  securityId: string;
+  quantity: number;
+  disclosedQuantity?: number;
+  price: number;
+  triggerPrice: number;
+
+  // Required only for OCO (Stop Loss Leg)
+  price1?: number;
+  triggerPrice1?: number;
+  quantity1?: number;
+}
+
+export interface ModifyForeverOrderRequest {
+  dhanClientId: string;
+  orderId: string;
+  orderFlag: OrderFlag;
+  orderType: OrderType;
+  legName: LegName;
+  quantity: number;
+  price: number;
+  disclosedQuantity?: number;
+  triggerPrice: number;
+  validity: Validity;
+}
+
 export interface PlaceSuperOrderRequest {
   dhanClientId: string;
   correlationId?: string;
@@ -175,6 +212,54 @@ export class DhanService {
         orderId: string;
         orderStatus: string;
       }>(`/orders/${orderId}`);
+      return data;
+    });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Forever Order (GTT) operations                                    */
+  /* ------------------------------------------------------------------ */
+
+  async placeForeverOrder(
+    req: PlaceForeverOrderRequest,
+  ): Promise<PlaceOrderResponse> {
+    return this.withAuthRetry(async (http) => {
+      const { data } = await http.post<PlaceOrderResponse>(
+        "/forever/orders",
+        req,
+      );
+      return data;
+    });
+  }
+
+  async modifyForeverOrder(
+    orderId: string,
+    req: ModifyForeverOrderRequest,
+  ): Promise<PlaceOrderResponse> {
+    return this.withAuthRetry(async (http) => {
+      const { data } = await http.put<PlaceOrderResponse>(
+        `/forever/orders/${orderId}`,
+        req,
+      );
+      return data;
+    });
+  }
+
+  async cancelForeverOrder(
+    orderId: string,
+  ): Promise<{ orderId: string; orderStatus: string }> {
+    return this.withAuthRetry(async (http) => {
+      const { data } = await http.delete<{
+        orderId: string;
+        orderStatus: string;
+      }>(`/forever/orders/${orderId}`);
+      return data;
+    });
+  }
+
+  async getForeverOrders(): Promise<any[]> {
+    return this.withAuthRetry(async (http) => {
+      const { data } = await http.get<any[]>("/forever/all");
       return data;
     });
   }

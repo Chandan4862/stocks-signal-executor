@@ -6,7 +6,10 @@ export interface ValidatedTrade {
   id: number;
   securityId: string;
   symbol: string;
+  cmp: number;
+  entryCondition: string;
   entryPrice: number;
+  entryPrice2?: number;
   quantity: number;
   capital: number;
   slTrigger: number;

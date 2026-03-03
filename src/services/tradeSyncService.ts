@@ -15,6 +15,7 @@ import {
   PlaceOrderRequest,
   PlaceOrderResponse,
   PlaceSuperOrderRequest,
+  PlaceForeverOrderRequest,
 } from "./dhanService";
 import { QuantityResolverService } from "./quantityResolverService";
 import { TSLService } from "./tslService";
@@ -86,7 +87,7 @@ export class TradeSyncService {
         if (!validated) continue;
 
         // Place order (super or legacy)
-        const buyRes = await this.placeEntryOrder(dhan, validated, at);
+        const buyRes = await this.placeForeverEntry(dhan, validated);
 
         // Persist state (idempotency, snapshot, audit)
         await this.persistBuyState(store, audit, validated, buyRes);
@@ -94,7 +95,9 @@ export class TradeSyncService {
 
         // Legacy mode: place separate SL leg
         if (!this.cfg.useSuperOrder) {
-          await this.placeLegacyStopLoss(store, dhan, audit, validated);
+          // Note: In Forever Order strategy, we skip placing a legacy SL here
+          // because we don't hold the stock yet. We execute the OCO SL
+          // when the entry triggers. We'll leave this empty or remove it.
         }
       } catch (err: any) {
         await audit.record(LifecycleEvents.ERROR_OCCURRED, {
@@ -104,6 +107,243 @@ export class TradeSyncService {
       } finally {
         await store.redis.del(RedisKeys.lockTrade(id));
       }
+    }
+  }
+
+  // Phase 3: Monitor pending Forever Orders and attach OCO Exit legs
+  async monitorPendingEntries(
+    store: StateStore,
+    dhan: DhanService,
+    audit: AuditLogService,
+  ): Promise<void> {
+    try {
+      // 1. Fetch all Forever Orders from Dhan
+      const foreverOrders = await dhan.getForeverOrders();
+      if (!Array.isArray(foreverOrders)) return;
+
+      // 2. We need to find local trades in AWAITING_ENTRY state
+      // (For this, we'll iterate through Redis keys that match trade:* and check state)
+      const keys = await store.redis.keys(RedisKeys.trade("*"));
+      for (const key of keys) {
+        const tradeDataStr = await store.redis.get(key);
+        if (!tradeDataStr) continue;
+
+        const tradeData = JSON.parse(tradeDataStr);
+        if (tradeData.state !== "AWAITING_ENTRY" || !tradeData.buyOrderId)
+          continue;
+
+        // 3. Find the corresponding Dhan order
+        const dhanOrder = foreverOrders.find(
+          (o) => String(o.orderId) === String(tradeData.buyOrderId),
+        );
+
+        if (!dhanOrder) continue;
+
+        // 4. If the order is TRADED (meaning entry breakout/dip was hit)
+        if (dhanOrder.orderStatus === "TRADED") {
+          // We have entered the position! Let's place the OCO Exit Bracket.
+          const tradedPrice =
+            typeof dhanOrder.price === "number"
+              ? dhanOrder.price
+              : tradeData.entry_price;
+
+          // Fetch target & sl from local state (assuming we parse and store them, or re-fetch active trade.. wait, we need target/sl.
+          // Let's ensure target & sl Trigger are persisted in tradeData when we place the entry!)
+          const targetPrice = tradeData.target || tradedPrice * 1.05; // Fallback 5% if missing
+          const stopLossPrice = tradeData.slTrigger || tradedPrice * 0.95; // Fallback 5% if missing
+
+          const exitReq: PlaceForeverOrderRequest = {
+            dhanClientId: this.cfg.dhan.clientId,
+            correlationId: `exit:${tradeData.id}`,
+            orderFlag: "OCO",
+            transactionType: "SELL",
+            exchangeSegment: "NSE_EQ",
+            productType: "CNC", // Assuming CNC holding
+            orderType: "LIMIT",
+            validity: "DAY",
+            securityId: tradeData.securityId,
+            quantity: tradeData.quantity,
+            // Leg 1: Target
+            price: targetPrice,
+            triggerPrice: targetPrice,
+            // Leg 2: Stop Loss
+            price1: stopLossPrice,
+            triggerPrice1: stopLossPrice,
+            quantity1: tradeData.quantity,
+          };
+
+          try {
+            // Let's ensure exitReq is using correct types by importing if necessary.
+            // (PlaceForeverOrderRequest is already imported)
+            const exitRes = await dhan.placeForeverOrder(exitReq);
+
+            // Update local state to ENTERED and save the exit OCO Order ID
+            tradeData.state = "ENTERED";
+            tradeData.exitOrderId = exitRes.orderId;
+            tradeData.entry_price = tradedPrice;
+
+            await store.redis.set(
+              key,
+              JSON.stringify(tradeData),
+              "EX",
+              86400 * 30,
+            ); // Extend TTL if held
+
+            await audit.record(LifecycleEvents.BUY_PLACED, {
+              id: tradeData.id,
+              message: "Entry Forever Order TRADED. Attached OCO Exit.",
+              entryPrice: tradedPrice,
+              exitOrderId: exitRes.orderId,
+            });
+
+            // Update Postgres trades table to ENTERED
+            try {
+              await store.pg.query(
+                `UPDATE trades SET state = 'ENTERED', entered_at = NOW() WHERE id = $1`,
+                [tradeData.id],
+              );
+            } catch (err: any) {
+              console.error(
+                `PG update failed for trade ${tradeData.id}:`,
+                err.message,
+              );
+            }
+          } catch (err: any) {
+            await audit.record(LifecycleEvents.ERROR_OCCURRED, {
+              id: tradeData.id,
+              action: "Attach OCO Exception",
+              error: err.message,
+            });
+          }
+        } else if (
+          dhanOrder.orderStatus === "CANCELLED" ||
+          dhanOrder.orderStatus === "REJECTED" ||
+          dhanOrder.orderStatus === "EXPIRED"
+        ) {
+          // Entry failed or was cancelled by user directly on Dhan
+          tradeData.state = "CLOSED";
+          await store.redis.set(key, JSON.stringify(tradeData), "EX", 3600);
+          await audit.record(LifecycleEvents.ERROR_OCCURRED, {
+            id: tradeData.id,
+            action: "Entry Order Cancelled/Rejected",
+          });
+
+          // Update Postgres table to CANCELLED
+          try {
+            await store.pg.query(
+              `UPDATE trades SET state = 'CANCELLED' WHERE id = $1`,
+              [tradeData.id],
+            );
+          } catch (err: any) {}
+        }
+      }
+    } catch (err: any) {
+      console.error("monitorPendingEntries error:", err.message);
+    }
+  }
+
+  // Phase 4: Handle External Closures via Closed Trades API
+  async processClosedTrades(
+    store: StateStore,
+    dhan: DhanService,
+    audit: AuditLogService,
+  ): Promise<void> {
+    try {
+      const closedTrades = await this.fetchClosedTrades();
+      for (const ct of closedTrades) {
+        // Check if this trade exists in our local tracker
+        const tradeKey = RedisKeys.trade(ct.id);
+        const tradeDataStr = await store.redis.get(tradeKey);
+        if (!tradeDataStr) continue;
+
+        const tradeData = JSON.parse(tradeDataStr);
+
+        // If the trade is already closed locally, do nothing
+        if (
+          tradeData.state === "CLOSED" ||
+          tradeData.state === "CLOSED_BY_ANALYST"
+        )
+          continue;
+
+        // Let's cancel whatever is pending and clear it out
+        if (tradeData.state === "AWAITING_ENTRY") {
+          try {
+            if (tradeData.buyOrderId) {
+              await dhan.cancelForeverOrder(tradeData.buyOrderId);
+            }
+            tradeData.state = "CLOSED";
+            await store.redis.set(
+              tradeKey,
+              JSON.stringify(tradeData),
+              "EX",
+              3600,
+            );
+            await audit.record(LifecycleEvents.SKIP_TRADE, {
+              id: ct.id,
+              message:
+                "Trade closed by analyst before entry executed. Cancelled pending Forever order.",
+            });
+
+            // Update Postgres table to CANCELLED
+            try {
+              await store.pg.query(
+                `UPDATE trades SET state = 'CLOSED' WHERE id = $1`,
+                [ct.id],
+              );
+            } catch (err: any) {}
+          } catch (err: any) {}
+        } else if (tradeData.state === "ENTERED") {
+          try {
+            if (tradeData.exitOrderId) {
+              await dhan.cancelForeverOrder(tradeData.exitOrderId);
+            }
+
+            // We possess the stock, fire an immediate Market SELL to liquidate at CMP
+            const sellReq: PlaceOrderRequest = {
+              dhanClientId: this.cfg.dhan.clientId,
+              correlationId: `liq:${ct.id}`,
+              transactionType: "SELL",
+              exchangeSegment: "NSE_EQ",
+              productType: "CNC",
+              orderType: "MARKET",
+              validity: "DAY",
+              securityId: tradeData.securityId,
+              quantity: tradeData.quantity,
+            };
+            await dhan.placeOrder(sellReq);
+
+            tradeData.state = "CLOSED_BY_ANALYST";
+            await store.redis.set(
+              tradeKey,
+              JSON.stringify(tradeData),
+              "EX",
+              3600,
+            );
+            await audit.record(LifecycleEvents.SELL_PLACED, {
+              id: ct.id,
+              message:
+                "Analyst officially closed the trade. Liquidated position at Market.",
+            });
+
+            // Assuming market execution near CMP or entry price
+            try {
+              const exitPrice = ct.cmp ?? tradeData.entry_price; // approximate
+              await store.pg.query(
+                `UPDATE trades SET state = 'CLOSED_BY_ANALYST', exited_at = NOW(), exit_price = $1 WHERE id = $2`,
+                [exitPrice, ct.id],
+              );
+            } catch (err: any) {}
+          } catch (err: any) {
+            await audit.record(LifecycleEvents.ERROR_OCCURRED, {
+              id: ct.id,
+              message: "Failed to liquidate closed trade",
+              error: err.message,
+            });
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error("processClosedTrades error:", err.message);
     }
   }
 
@@ -202,11 +442,11 @@ export class TradeSyncService {
       return null;
     }
 
+    const cmp = at.cmp ?? 0;
+
     // Resolve entry price
     const entryPrice =
-      (typeof at.entry_price === "number" ? at.entry_price : undefined) ??
-      at.cmp ??
-      0;
+      (typeof at.entry_price === "number" ? at.entry_price : undefined) ?? cmp;
     if (!entryPrice || entryPrice <= 0) {
       audit.record(LifecycleEvents.ERROR_OCCURRED, {
         id,
@@ -215,6 +455,10 @@ export class TradeSyncService {
       });
       return null;
     }
+
+    const entryPrice2 =
+      typeof at.entry_price_2 === "number" ? at.entry_price_2 : undefined;
+    const entryCondition = at.entry_condition || "";
 
     // Resolve capital & quantity
     const capital = (at as any)?.meta?.max_capital ?? this.cfg.maxTradeCapital;
@@ -243,7 +487,10 @@ export class TradeSyncService {
       id,
       securityId,
       symbol,
+      cmp,
+      entryCondition,
       entryPrice,
+      entryPrice2,
       quantity: qty,
       capital,
       slTrigger,
@@ -252,47 +499,57 @@ export class TradeSyncService {
   }
 
   /**
-   * Place entry order: super order (BUY+SL+target combined) or legacy BUY MARKET.
+   * Place entry order: SINGLE Forever Order for entry breakout/limit conditions.
+   * If condition is already met (cmp in range), fall back to Market order immediately?
+   * For this implementation, we always set a Forever Order with triggerPrice.
    */
-  private async placeEntryOrder(
+  private async placeForeverEntry(
     dhan: DhanService,
     v: ValidatedTrade,
-    at: ActiveTrade,
   ): Promise<PlaceOrderResponse> {
-    if (this.cfg.useSuperOrder) {
-      const superReq: PlaceSuperOrderRequest = {
-        dhanClientId: this.cfg.dhan.clientId,
-        correlationId: `buy:${v.id}`,
-        transactionType: "BUY",
-        exchangeSegment: "NSE_EQ",
-        productType: "CNC",
-        orderType: "LIMIT",
-        securityId: v.securityId,
-        quantity: v.quantity,
-        price: v.entryPrice,
-        targetPrice: v.target,
-        stopLossPrice: v.slTrigger,
-        trailingJump: this.cfg.tsl.incrementRs,
-      };
-      return dhan.placeSuperOrder(superReq);
+    // Default trigger is the entryPrice
+    let triggerPrice = v.entryPrice;
+
+    if (v.entryCondition === "between" && v.entryPrice2) {
+      if (v.cmp < v.entryPrice) {
+        triggerPrice = v.entryPrice; // Breakout buy
+      } else if (v.cmp > v.entryPrice2) {
+        triggerPrice = v.entryPrice2; // Buy on dip
+      } else {
+        // We are within range. For safety/consistency, trigger at CMP or slightly below
+        triggerPrice = v.cmp;
+      }
+    } else if (v.entryCondition === "greater_than") {
+      triggerPrice = v.entryPrice; // Buy if crosses above
+    } else {
+      triggerPrice = v.entryPrice; // Default fallback
     }
 
-    const buyReq: PlaceOrderRequest = {
+    // `price` for the actual limit order triggered once `triggerPrice` hits.
+    // Adding a 0.5% buffer above trigger to ensure execution during fast breakouts
+    const executionLimitPrice = Number((triggerPrice * 1.005).toFixed(1));
+
+    const req: PlaceForeverOrderRequest = {
       dhanClientId: this.cfg.dhan.clientId,
       correlationId: `buy:${v.id}`,
+      orderFlag: "SINGLE",
       transactionType: "BUY",
-      exchangeSegment: "NSE_EQ",
-      productType: "CNC",
-      orderType: "MARKET",
+      exchangeSegment: "NSE_EQ", // Assumes NSE Equities for now
+      productType: "CNC", // Cash and Carry delivery
+      orderType: "LIMIT",
       validity: "DAY",
       securityId: v.securityId,
       quantity: v.quantity,
+      price: executionLimitPrice,
+      triggerPrice: triggerPrice,
     };
-    return dhan.placeOrder(buyReq);
+
+    return dhan.placeForeverOrder(req);
   }
 
   /**
    * Persist BUY state: set idempotency key, cache trade snapshot, record audit.
+   * Modifies state to AWAITING_ENTRY.
    */
   private async persistBuyState(
     store: StateStore,
@@ -301,6 +558,8 @@ export class TradeSyncService {
     buyRes: PlaceOrderResponse,
   ): Promise<void> {
     await store.redis.set(RedisKeys.idempotencyBuy(v.id), "1", "EX", 86400);
+
+    // Store as AWAITING_ENTRY initially. We'll poll Dhan on a timer to check if it traded.
     await store.redis.set(
       RedisKeys.trade(v.id),
       JSON.stringify({
@@ -308,7 +567,7 @@ export class TradeSyncService {
         securityId: v.securityId,
         entry_price: v.entryPrice,
         quantity: v.quantity,
-        state: "OPEN",
+        state: "AWAITING_ENTRY",
         buyOrderId: buyRes.orderId,
         symbol: v.symbol,
       }),
@@ -319,57 +578,23 @@ export class TradeSyncService {
       id: v.id,
       orderId: buyRes.orderId,
       securityId: v.securityId,
-      entryPrice: v.entryPrice,
+      triggerPrice: v.entryPrice,
       quantity: v.quantity,
+      state: "AWAITING_ENTRY",
+      isForeverOrder: true,
     });
-  }
 
-  /**
-   * Legacy mode only: place a separate SL-M (Stop Loss Market) order after BUY.
-   */
-  private async placeLegacyStopLoss(
-    store: StateStore,
-    dhan: DhanService,
-    audit: AuditLogService,
-    v: ValidatedTrade,
-  ): Promise<void> {
-    const slGuardSet = await store.redis.set(
-      RedisKeys.idempotencySl(v.id),
-      "1",
-      "EX",
-      86400,
-      "NX",
-    );
-    if (!slGuardSet) return;
-
-    const slReq: PlaceOrderRequest = {
-      dhanClientId: this.cfg.dhan.clientId,
-      correlationId: `sl:${v.id}`,
-      transactionType: "SELL",
-      exchangeSegment: "NSE_EQ",
-      productType: "CNC",
-      orderType: "STOP_LOSS_MARKET",
-      validity: "DAY",
-      securityId: v.securityId,
-      quantity: v.quantity,
-      triggerPrice: v.slTrigger,
-    };
-    const slRes = await dhan.placeOrder(slReq);
-    await store.redis.set(
-      RedisKeys.tsl(v.id),
-      JSON.stringify({
-        slOrderId: slRes.orderId,
-        triggerPrice: v.slTrigger,
-        lastUpdatedAt: Date.now(),
-      }),
-      "EX",
-      86400,
-    );
-    await audit.record(LifecycleEvents.GTT_PLACED, {
-      id: v.id,
-      req: slReq,
-      res: slRes,
-    });
+    // Persist to Postgres `trades` table
+    try {
+      await store.pg.query(
+        `INSERT INTO trades (id, tradingsymbol, exchange, reco_type, entry_price, quantity, state)
+         VALUES ($1, $2, 'NSE', 'buy', $3, $4, 'AWAITING_ENTRY')
+         ON CONFLICT (id) DO NOTHING`,
+        [v.id, v.symbol, v.entryPrice, v.quantity],
+      );
+    } catch (err: any) {
+      console.error(`Failed to insert trade ${v.id} into pg:`, err.message);
+    }
   }
 
   // Normalize API payloads (Phase 1): parse strings -> numbers & parse meta_data

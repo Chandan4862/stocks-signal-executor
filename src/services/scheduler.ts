@@ -91,6 +91,8 @@ export class Scheduler {
           }
 
           // ── Step 2–4: Trade sync, execute, persist ──
+
+          // Phase 2: Actives - scan and place SINGLE Forever Orders
           await tradeSync.runBuyAndInitialSl(
             store,
             dhan,
@@ -99,6 +101,12 @@ export class Scheduler {
             audit,
             instrumentLookup,
           );
+
+          // Phase 3: Monitor pending Forever Orders - attach OCO if TRADED
+          await tradeSync.monitorPendingEntries(store, dhan, audit);
+
+          // Phase 4: Handle external closures from Closed API
+          await tradeSync.processClosedTrades(store, dhan, audit);
         } finally {
           await store.disconnect();
         }

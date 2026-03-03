@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS trades (
   reco_type TEXT NOT NULL CHECK (reco_type IN ('buy','sell')),
   entry_price NUMERIC(12,2) NOT NULL,
   quantity INTEGER NOT NULL,
-  state TEXT NOT NULL CHECK (state IN ('NEW','ENTERED','EXITED','CANCELLED')),
+  state TEXT NOT NULL,
   entered_at TIMESTAMPTZ,
   exited_at TIMESTAMPTZ,
   exit_price NUMERIC(12,2)
@@ -37,18 +37,6 @@ CREATE TABLE IF NOT EXISTS token_store (
   enctoken TEXT NOT NULL,
   expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS instrument_list_nse_eq (
-  id BIGSERIAL PRIMARY KEY,
-  exch_id TEXT NOT NULL,
-  security_id TEXT NOT NULL,
-  instrument TEXT,
-  underlying_symbol TEXT,
-  display_name TEXT,
-  instrument_type TEXT,
-  series TEXT,
-  fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS instrument_list_nse_eq (
