@@ -17,6 +17,8 @@ export function loadConfig(): AppConfig {
     },
     dhan: {
       clientId: env.DHAN_CLIENT_ID,
+      pin: env.DHAN_PIN || undefined,
+      totpSecret: env.DHAN_TOTP_SECRET || undefined,
     },
     apis: {
       activeTradesUrl: env.ACTIVE_TRADES_URL,

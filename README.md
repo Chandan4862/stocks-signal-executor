@@ -16,10 +16,36 @@ npm run dev
 
 See `.env.example`. In production, store secrets in a secrets manager (e.g., AWS Secrets Manager).
 
-### Dhan Auth
+### Dhan Authentication
 
-- The HTTP client authenticates with the header `access-token: <token>`.
-- Tokens last ~30 days; the bot stores the token in Redis (`broker:token`) with TTL and persists a copy in Postgres (`token_store.expires_at`).
+The bot authenticates with the Dhan API using an **access token** passed as the `access-token` HTTP header. Dhan access tokens are valid for **~24 hours**.
+
+**Three ways to provide a token (in priority order):**
+
+1. **TOTP auto-generation (recommended for automation)**
+   - Set `DHAN_PIN` and `DHAN_TOTP_SECRET` in `.env`
+   - Requires TOTP enabled on your Dhan account (Settings → DhanHQ Trading APIs → Setup TOTP)
+   - The bot generates a fresh token automatically via `POST https://auth.dhan.co/app/generateAccessToken`
+
+2. **Environment variable**
+   - Set `DHAN_ACCESS_TOKEN` in `.env` with a token from [web.dhan.co](https://web.dhan.co)
+   - Good for initial testing; token expires after ~24h
+
+3. **Telegram `/token` command**
+   - Send `/token YOUR_ACCESS_TOKEN [YYYY-MM-DD]` to the bot
+   - The bot validates the token against Dhan's profile API before storing it
+
+**Token lifecycle:**
+
+- On each tick, the scheduler checks for a valid token (Redis → Postgres → env → TOTP generation)
+- Active tokens can be renewed for another 24h via `/renew` Telegram command or the RenewToken API
+- On HTTP 401/403, the DhanService automatically invalidates the cached token, obtains a fresh one, and retries the request
+- If no valid token is available, trading is paused and a Telegram alert is sent
+
+**Token storage:**
+
+- Fast path: Redis key `broker:token` with TTL
+- Durable: Postgres `token_store` table with `expires_at` for audit and recovery
 
 ### Risk & Caps
 

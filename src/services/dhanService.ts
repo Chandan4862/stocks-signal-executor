@@ -1,9 +1,12 @@
 /*
- DhanService: Interacts with Dhan API for orders and related actions.
- Access tokens typically have ~30 days lifespan; sourced via TokenService.
+  DhanService: Interacts with Dhan API v2 for orders and related actions.
+
+  Auth: Every request includes header `access-token: <JWT>`.
+  Tokens are managed by TokenService (24h validity, auto-renewable).
+  On 401/403, the cached token is invalidated and a fresh one is obtained.
 */
 
-import axios, { AxiosInstance } from "axios";
+import axios, { AxiosInstance, AxiosError } from "axios";
 import type { AppConfig } from "../config/schema";
 import { OrderState } from "../enums/trade";
 import { TokenService } from "./tokenService";
@@ -53,48 +56,94 @@ export interface PlaceSuperOrderRequest {
 
 export class DhanService {
   private http?: AxiosInstance;
+  private currentToken?: string;
 
   constructor(
     private cfg: AppConfig,
     private tokens: TokenService,
   ) {}
 
-  private async ensureHttp(): Promise<AxiosInstance> {
-    if (this.http) return this.http;
+  /* ------------------------------------------------------------------ */
+  /*  HTTP client with auto-refresh on 401                               */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Get or create an Axios instance authenticated with the current token.
+   * If the token has changed (e.g. after invalidation + refresh), the
+   * client is re-created with the new token.
+   */
+  private async ensureHttp(forceRefresh = false): Promise<AxiosInstance> {
     const token = await this.tokens.getToken();
-    if (!token) throw new Error("Missing Dhan access token");
-    this.http = axios.create({
-      baseURL: "https://api.dhan.co/v2",
-      headers: {
-        "Content-Type": "application/json",
-        "access-token": token,
-      },
-      timeout: 10000,
-    });
+    if (!token) throw new Error("Missing Dhan access token — trading paused");
+
+    // Re-create client if token changed or forced
+    if (!this.http || this.currentToken !== token || forceRefresh) {
+      this.currentToken = token;
+      this.http = axios.create({
+        baseURL: "https://api.dhan.co/v2",
+        headers: {
+          "Content-Type": "application/json",
+          "access-token": token,
+        },
+        timeout: 10_000,
+      });
+    }
+
     return this.http;
   }
 
+  /**
+   * Execute an HTTP call with automatic retry on 401/403.
+   * On auth failure: invalidate cached token → get fresh token → retry once.
+   */
+  private async withAuthRetry<T>(
+    fn: (http: AxiosInstance) => Promise<T>,
+  ): Promise<T> {
+    try {
+      const http = await this.ensureHttp();
+      return await fn(http);
+    } catch (err) {
+      if (this.isAuthError(err)) {
+        console.warn(
+          "DhanService: 401/403 received — refreshing token and retrying…",
+        );
+        await this.tokens.invalidateToken();
+        this.http = undefined; // force re-creation
+        const http = await this.ensureHttp();
+        return await fn(http); // retry once; let it throw if still fails
+      }
+      throw err;
+    }
+  }
+
+  private isAuthError(err: unknown): boolean {
+    if (err instanceof AxiosError) {
+      return err.response?.status === 401 || err.response?.status === 403;
+    }
+    return false;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Order operations                                                   */
+  /* ------------------------------------------------------------------ */
+
   async placeOrder(req: PlaceOrderRequest): Promise<PlaceOrderResponse> {
-    // const http = await this.ensureHttp();
-    // const { data } = await http.post<PlaceOrderResponse>("/orders", req);
-    // return data;
-    console.log("DhanService.placeOrder called with:", req);
-    return {
-      orderStatus: "success",
-      orderId: "DhanOrder12345",
-    };
+    return this.withAuthRetry(async (http) => {
+      const { data } = await http.post<PlaceOrderResponse>("/orders", req);
+      return data;
+    });
   }
 
   async placeSuperOrder(
     req: PlaceSuperOrderRequest,
   ): Promise<PlaceOrderResponse> {
-    // const http = await this.ensureHttp();
-    // const { data } = await http.post<PlaceOrderResponse>("/super/orders", req);
-    // return data;
-    return {
-      orderId: String(req.correlationId || "superOrder"),
-      orderStatus: "success",
-    };
+    return this.withAuthRetry(async (http) => {
+      const { data } = await http.post<PlaceOrderResponse>(
+        "/super/orders",
+        req,
+      );
+      return data;
+    });
   }
 
   async modifyOrder(
@@ -104,27 +153,29 @@ export class DhanService {
       validity: Validity;
     },
   ): Promise<PlaceOrderResponse> {
-    const http = await this.ensureHttp();
-    const body: any = {
-      dhanClientId: this.cfg.dhan.clientId,
-      orderId,
-      ...req,
-    };
-    const { data } = await http.put<PlaceOrderResponse>(
-      `/orders/${orderId}`,
-      body,
-    );
-    return data;
+    return this.withAuthRetry(async (http) => {
+      const body: any = {
+        dhanClientId: this.cfg.dhan.clientId,
+        orderId,
+        ...req,
+      };
+      const { data } = await http.put<PlaceOrderResponse>(
+        `/orders/${orderId}`,
+        body,
+      );
+      return data;
+    });
   }
 
   async cancelOrder(
     orderId: string,
   ): Promise<{ orderId: string; orderStatus: string }> {
-    const http = await this.ensureHttp();
-    const { data } = await http.delete<{
-      orderId: string;
-      orderStatus: string;
-    }>(`/orders/${orderId}`);
-    return data;
+    return this.withAuthRetry(async (http) => {
+      const { data } = await http.delete<{
+        orderId: string;
+        orderStatus: string;
+      }>(`/orders/${orderId}`);
+      return data;
+    });
   }
 }

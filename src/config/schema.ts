@@ -18,6 +18,8 @@ export const AppConfigSchema = z.object({
     .partial(),
   dhan: z.object({
     clientId: z.string().min(3),
+    pin: z.string().optional(), // Login PIN — required for TOTP-based token generation
+    totpSecret: z.string().optional(), // Base32 TOTP secret — enables auto token generation
   }),
   apis: z.object({
     activeTradesUrl: z.string().url(),
