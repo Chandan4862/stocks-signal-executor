@@ -20,7 +20,6 @@ export class AuditLogService {
   ): Promise<void> {
     const tradeId = payload.id ?? null;
 
-    console.log("AuditLog: ", event, payload);
     if (this.pg && logToDb) {
       try {
         await this.pg.query(

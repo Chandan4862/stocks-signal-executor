@@ -124,7 +124,8 @@ export class TelegramService {
           } else {
             tokenInfo = "❌ No token available";
           }
-        } catch {
+        } catch (err) {
+          console.error("TelegramService: token check failed", err);
           tokenInfo = "⚠️ Token check failed";
         }
       }

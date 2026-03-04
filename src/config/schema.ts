@@ -41,6 +41,7 @@ export const AppConfigSchema = z.object({
   maxTradeCapital: z.number().positive(),
   maxActiveTrades: z.number().int().positive(),
   useSuperOrder: z.boolean(),
+  env: z.enum(["development", "production", "test"]).default("development"),
   tsl: TslConfigSchema,
 });
 

@@ -6,10 +6,10 @@
   "description": "Automated trading execution bot integrating Zerodha Kite, Active/Closed Trades APIs, and Telegram notifications.",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "ts-node src/index.ts",
-    "dev:watch": "nodemon",
+    "dev": "NODE_ENV=development ts-node src/index.ts",
+    "dev:watch": "NODE_ENV=development nodemon",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
+    "start": "NODE_ENV=production node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run",

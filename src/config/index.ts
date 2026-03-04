@@ -40,6 +40,7 @@ export function loadConfig(): AppConfig {
     maxTradeCapital: Number(env.MAX_TRADE_CAPITAL || 10000),
     maxActiveTrades: Number(env.MAX_ACTIVE_TRADES || 10),
     useSuperOrder: bool(env.USE_SUPER_ORDER, true),
+    env: (env.NODE_ENV as any) || "development",
     tsl: {
       incrementRs: Number(env.TSL_INCREMENT_RS || 2),
       initialSlPct: Number(env.TSL_INITIAL_SL_PCT || 3),

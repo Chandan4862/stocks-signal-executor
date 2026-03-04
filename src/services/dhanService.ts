@@ -116,9 +116,15 @@ export class DhanService {
     // Re-create client if token changed or forced
     if (!this.http || this.currentToken !== token || forceRefresh) {
       this.currentToken = token;
+      const baseURL =
+        this.cfg.env === "development"
+          ? "https://sandbox.dhan.co/v2"
+          : "https://api.dhan.co/v2";
+
       this.http = axios.create({
-        baseURL: "https://api.dhan.co/v2",
+        baseURL,
         headers: {
+          Accept: "application/json",
           "Content-Type": "application/json",
           "access-token": token,
         },

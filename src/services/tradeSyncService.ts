@@ -23,7 +23,6 @@ import { AuditLogService } from "./auditLogService";
 import { InstrumentLookupService } from "./instrumentLookupService";
 import { RedisKeys } from "../state/redisKeys";
 import { InstrumentType, LifecycleEvents } from "../enums/trade";
-import { symbol } from "zod";
 
 export class TradeSyncService {
   constructor(private cfg: AppConfig) {}
