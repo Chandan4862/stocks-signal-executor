@@ -3,6 +3,8 @@ export enum TradeState {
   ENTERED = "ENTERED", // buy executed
   EXITED = "EXITED", // sell executed
   CANCELLED = "CANCELLED", // invalidated or cancelled before entry
+  AWAITING_ENTRY = "AWAITING_ENTRY", // buy executed, waiting for exit
+  CLOSED_BY_ANALYST = "CLOSED_BY_ANALYST", // closed by analyst
 }
 
 export enum OrderState {

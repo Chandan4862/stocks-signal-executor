@@ -153,7 +153,7 @@ export class TradeSyncService {
 
           const exitReq: PlaceForeverOrderRequest = {
             dhanClientId: this.cfg.dhan.clientId,
-            correlationId: `exit:${tradeData.id}`,
+            correlationId: `exit_${tradeData.id}`.slice(0, 30),
             orderFlag: "OCO",
             transactionType: "SELL",
             exchangeSegment: "NSE_EQ",
@@ -300,7 +300,7 @@ export class TradeSyncService {
             // We possess the stock, fire an immediate Market SELL to liquidate at CMP
             const sellReq: PlaceOrderRequest = {
               dhanClientId: this.cfg.dhan.clientId,
-              correlationId: `liq:${ct.id}`,
+              correlationId: `liq_${ct.id}`.slice(0, 30),
               transactionType: "SELL",
               exchangeSegment: "NSE_EQ",
               productType: "CNC",
@@ -530,7 +530,7 @@ export class TradeSyncService {
 
     const req: PlaceForeverOrderRequest = {
       dhanClientId: this.cfg.dhan.clientId,
-      correlationId: `buy:${v.id}`,
+      correlationId: `buy_${v.id}`.slice(0, 30),
       orderFlag: "SINGLE",
       transactionType: "BUY",
       exchangeSegment: "NSE_EQ", // Assumes NSE Equities for now

@@ -91,6 +91,8 @@ export interface PlaceSuperOrderRequest {
   trailingJump?: number; // absolute Rs jump for trailing
 }
 
+import { StateStore } from "./stateStore";
+
 export class DhanService {
   private http?: AxiosInstance;
   private currentToken?: string;
@@ -98,6 +100,7 @@ export class DhanService {
   constructor(
     private cfg: AppConfig,
     private tokens: TokenService,
+    private store: StateStore,
   ) {}
 
   /* ------------------------------------------------------------------ */
@@ -129,6 +132,39 @@ export class DhanService {
           "access-token": token,
         },
         timeout: 10_000,
+      });
+
+      this.http.interceptors.request.use((config) => {
+        const method = config.method?.toUpperCase() || "GET";
+        const url = `${config.baseURL || ""}${config.url || ""}`;
+
+        // Build Headers safely. We omit `common`, `delete`, `get`, `head`, `post`, `put`, `patch` which Axios includes sometimes.
+        const headerPairs: string[] = [];
+        for (const [key, value] of Object.entries(config.headers || {})) {
+          if (
+            typeof value === "string" ||
+            typeof value === "number" ||
+            typeof value === "boolean"
+          ) {
+            headerPairs.push(`-H '${key}: ${value}'`);
+          }
+        }
+
+        const headers = headerPairs.join(" ");
+        const data = config.data ? `-d '${JSON.stringify(config.data)}'` : "";
+
+        const curlCommand =
+          `> [Dhan API] cURL:\ncurl -X ${method} '${url}' \\\n  ${headers} \\\n  ${data}`.trim();
+
+        // Log to Redis list instead of console
+        // fetch by: redis-cli lrange logs:dhan:curl 0 10
+        this.store.redis.lpush("logs:dhan:curl", curlCommand).catch((err) => {
+          console.error("Failed to write Dhan curl to redis", err);
+        });
+        // Keep only the latest 100 curl logs
+        this.store.redis.ltrim("logs:dhan:curl", 0, 99).catch(() => {});
+
+        return config;
       });
     }
 
@@ -225,7 +261,21 @@ export class DhanService {
   /* ------------------------------------------------------------------ */
   /*  Forever Order (GTT) operations                                    */
   /* ------------------------------------------------------------------ */
-
+  // eg:
+  // {
+  //   dhanClientId: '1110047506',
+  //   correlationId: 'buy:1352',
+  //   orderFlag: 'SINGLE',
+  //   transactionType: 'BUY',
+  //   exchangeSegment: 'NSE_EQ',
+  //   productType: 'CNC',
+  //   orderType: 'LIMIT',
+  //   validity: 'IOC',
+  //   securityId: '17438',
+  //   quantity: 55,
+  //   price: 454.3,
+  //   triggerPrice: 452
+  // }
   async placeForeverOrder(
     req: PlaceForeverOrderRequest,
   ): Promise<PlaceOrderResponse> {
@@ -265,7 +315,7 @@ export class DhanService {
 
   async getForeverOrders(): Promise<any[]> {
     return this.withAuthRetry(async (http) => {
-      const { data } = await http.get<any[]>("/forever/all");
+      const { data } = await http.get<any[]>("/forever/orders");
       return data;
     });
   }

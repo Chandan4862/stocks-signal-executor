@@ -52,7 +52,7 @@ export class Scheduler {
       async () => {
         const store = new StateStore(this.cfg);
         const tokens = new TokenService(this.cfg, store);
-        const dhan = new DhanService(this.cfg, tokens);
+        const dhan = new DhanService(this.cfg, tokens, store);
         const tradeSync = new TradeSyncService(this.cfg);
         const qtyResolver = new QuantityResolverService();
         const tsl = new TSLService({
