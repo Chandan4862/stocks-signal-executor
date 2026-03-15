@@ -39,6 +39,7 @@ export const AppConfigSchema = z.object({
   }),
   pollingIntervalMs: z.number().int().positive(),
   maxTradeCapital: z.number().positive(),
+  perTradeCapital: z.number().positive(),
   maxActiveTrades: z.number().int().positive(),
   useSuperOrder: z.boolean(),
   env: z.enum(["development", "production", "test"]).default("development"),

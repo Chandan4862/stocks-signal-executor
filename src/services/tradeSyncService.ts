@@ -51,7 +51,6 @@ export class TradeSyncService {
     instrumentLookup: InstrumentLookupService,
   ): Promise<void> {
     const actives = await this.fetchActiveTrades();
-    let openCount = await this.getOpenTradeCount(store);
 
     for (const at of actives) {
       // Only process cash instruments
@@ -68,16 +67,14 @@ export class TradeSyncService {
       if (!gotLock) continue;
 
       try {
-        // Portfolio cap check
-        if (await this.isPortfolioCapReached(openCount, id, audit)) continue;
-
         // Idempotency guard
         const buyGuard = await store.redis.get(RedisKeys.idempotencyBuy(id));
         if (buyGuard) continue;
 
-        // Validate & resolve trade params
+        // Validate & resolve trade params (includes trade count + capital guards)
         const validated = await this.validateAndResolveTrade(
           at,
+          store,
           qtyResolver,
           tslService,
           audit,
@@ -90,7 +87,6 @@ export class TradeSyncService {
 
         // Persist state (idempotency, snapshot, audit)
         await this.persistBuyState(store, audit, validated, buyRes);
-        openCount++;
 
         // Legacy mode: place separate SL leg
         if (!this.cfg.useSuperOrder) {
@@ -110,6 +106,25 @@ export class TradeSyncService {
   }
 
   // Phase 3: Monitor pending Forever Orders and attach OCO Exit legs
+  // ┌─────────────────────────────────────────────────────────────┐
+  // │  monitorPendingEntries (runs on polling interval)           │
+  // │                                                             │
+  // │  1. GET /v2/forever/all  →  fetch all Dhan Forever Orders   │
+  // │  2. KEYS trade:*         →  scan Redis for local trades     │
+  // │  3. For each Redis trade where state = "AWAITING_ENTRY":    │
+  // │     └─ Match buyOrderId with Dhan orderId                   │
+  // │        ├─ TRADED     →  place OCO exit, update to ENTERED   │
+  // │        ├─ CANCELLED  →  mark CLOSED                         │
+  // │        ├─ REJECTED   →  mark CLOSED                         │
+  // │        ├─ EXPIRED    →  mark CLOSED                         │
+  // │        └─ PENDING    →  do nothing (check again next poll)  │
+  // └─────────────────────────────────────────────────────────────┘
+
+  // Why these TTLs?
+  // 1 day for AWAITING_ENTRY — the entry Forever Order is pending. If it doesn't trigger within a day, Redis auto-cleans it. The scheduler will re-discover it from the active trades API if still valid.
+  // 30 days for ENTERED — we hold the stock now, need to track it for exit monitoring (OCO target/SL). Long TTL because positions can be held for weeks.
+  // 1 hour for CLOSED — just a grace period so other polling cycles don't re-process it. After 1 hour, the key self-deletes.
+
   async monitorPendingEntries(
     store: StateStore,
     dhan: DhanService,
@@ -349,23 +364,6 @@ export class TradeSyncService {
   // ─── Extracted Private Methods ──────────────────────────────────────
 
   /**
-   * Query Postgres for the count of currently ENTERED (open) trades.
-   */
-  private async getOpenTradeCount(store: StateStore): Promise<number> {
-    try {
-      const res = await store.pg.query(
-        "SELECT COUNT(*) AS cnt FROM trades WHERE state = $1",
-        ["ENTERED"],
-      );
-      const raw = res.rows?.[0]?.cnt;
-      return raw !== undefined ? Number(raw) : 0;
-    } catch (error: any) {
-      console.error("Error fetching open trade count:", error.message);
-      return 0;
-    }
-  }
-
-  /**
    * Guard: returns true if the ActiveTrade is a cash instrument.
    * Logs SKIP_TRADE audit for non-cash.
    */
@@ -389,31 +387,12 @@ export class TradeSyncService {
   }
 
   /**
-   * Guard: returns true if portfolio cap is reached. Logs audit.
-   */
-  private async isPortfolioCapReached(
-    openCount: number,
-    id: number,
-    audit: AuditLogService,
-  ): Promise<boolean> {
-    if (openCount >= this.cfg.maxActiveTrades) {
-      await audit.record(LifecycleEvents.ERROR_OCCURRED, {
-        id,
-        reason: "Portfolio cap reached",
-        openCount,
-        maxActiveTrades: this.cfg.maxActiveTrades,
-      });
-      return true;
-    }
-    return false;
-  }
-
-  /**
    * Validate & resolve: securityId, entryPrice, qty, slTrigger, target.
    * Returns ValidatedTrade or null to skip.
    */
   private async validateAndResolveTrade(
     at: ActiveTrade,
+    store: StateStore,
     qtyResolver: QuantityResolverService,
     tslService: TSLService,
     audit: AuditLogService,
@@ -421,8 +400,31 @@ export class TradeSyncService {
   ): Promise<ValidatedTrade | null> {
     const id = at.id;
     const symbol = String(at.sc_symbol || "").toUpperCase();
+    const activeStates = ["AWAITING_ENTRY", "ENTERED"];
 
-    // Resolve securityId from instrument_list_nse_eq
+    // ── Guard 1: Max active trade count ──────────────────────────────
+    try {
+      const countRes = await store.pg.query(
+        `SELECT COUNT(*) AS cnt FROM trades WHERE state = ANY($1)`,
+        [activeStates],
+      );
+      const activeCount = Number(countRes.rows?.[0]?.cnt ?? 0);
+      if (activeCount >= this.cfg.maxActiveTrades) {
+        await audit.record(LifecycleEvents.SKIP_TRADE, {
+          id,
+          reason: "Max active trade limit reached",
+          activeCount,
+          maxActiveTrades: this.cfg.maxActiveTrades,
+        });
+        return null;
+      }
+    } catch (err: any) {
+      console.error("Error checking active trade count:", err.message);
+      // Fail-closed: skip trade if we can't verify the count
+      return null;
+    }
+
+    // ── Resolve securityId from instrument_list_nse_eq ────────────────
     if (!symbol) {
       await audit.record(LifecycleEvents.ERROR_OCCURRED, {
         id,
@@ -443,7 +445,7 @@ export class TradeSyncService {
 
     const cmp = at.cmp ?? 0;
 
-    // Resolve entry price
+    // ── Resolve entry price ──────────────────────────────────────────
     const entryPrice =
       (typeof at.entry_price === "number" ? at.entry_price : undefined) ?? cmp;
     if (!entryPrice || entryPrice <= 0) {
@@ -459,20 +461,45 @@ export class TradeSyncService {
       typeof at.entry_price_2 === "number" ? at.entry_price_2 : undefined;
     const entryCondition = at.entry_condition || "";
 
-    // Resolve capital & quantity
-    const capital = (at as any)?.meta?.max_capital ?? this.cfg.maxTradeCapital;
-    const qty = qtyResolver.deriveQty(entryPrice, Number(capital));
+    // ── Resolve capital & quantity ───────────────────────────────────
+    const perTradeCapital =
+      (at as any)?.meta?.max_capital ?? this.cfg.perTradeCapital;
+    const qty = qtyResolver.deriveQty(entryPrice, Number(perTradeCapital));
     if (!qty || qty <= 0) {
       audit.record(LifecycleEvents.ERROR_OCCURRED, {
         id,
         reason: "Derived quantity is 0",
         entryPrice,
-        capital,
+        capital: perTradeCapital,
       });
       return null;
     }
 
-    // Resolve SL trigger & target
+    // ── Guard 2: Max deployed capital ────────────────────────────────
+    const newTradeCapital = entryPrice * qty;
+    try {
+      const capRes = await store.pg.query(
+        `SELECT COALESCE(SUM(entry_price * quantity), 0) AS deployed
+         FROM trades WHERE state = ANY($1)`,
+        [activeStates],
+      );
+      const deployedCapital = Number(capRes.rows?.[0]?.deployed ?? 0);
+      if (deployedCapital + newTradeCapital > this.cfg.maxTradeCapital) {
+        await audit.record(LifecycleEvents.SKIP_TRADE, {
+          id,
+          reason: "Max deployed capital would be exceeded",
+          deployedCapital,
+          newTradeCapital,
+          maxTradeCapital: this.cfg.maxTradeCapital,
+        });
+        return null;
+      }
+    } catch (err: any) {
+      console.error("Error checking deployed capital:", err.message);
+      return null;
+    }
+
+    // ── Resolve SL trigger & target ──────────────────────────────────
     const slTrigger =
       typeof at.stoploss_price === "number" && at.stoploss_price > 0
         ? at.stoploss_price
@@ -491,7 +518,7 @@ export class TradeSyncService {
       entryPrice,
       entryPrice2,
       quantity: qty,
-      capital,
+      capital: perTradeCapital,
       slTrigger,
       target,
     };
@@ -569,6 +596,8 @@ export class TradeSyncService {
         state: "AWAITING_ENTRY",
         buyOrderId: buyRes.orderId,
         symbol: v.symbol,
+        target: v.target,
+        slTrigger: v.slTrigger,
       }),
       "EX",
       86400,
@@ -580,6 +609,8 @@ export class TradeSyncService {
       triggerPrice: v.entryPrice,
       quantity: v.quantity,
       state: "AWAITING_ENTRY",
+      target: v.target,
+      slTrigger: v.slTrigger,
       isForeverOrder: true,
     });
 
