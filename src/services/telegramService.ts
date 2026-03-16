@@ -18,11 +18,14 @@
 
 import { Telegraf } from "telegraf";
 import { TokenService, DhanProfile } from "./tokenService";
+import { AuditLogService } from "./auditLogService";
+import { LifecycleEvents } from "../enums/trade";
 
 export class TelegramService {
   private bot: Telegraf;
   private launched = false;
   private tokenService?: TokenService;
+  private audit?: AuditLogService;
 
   constructor(
     private botToken: string,
@@ -40,6 +43,15 @@ export class TelegramService {
     this.tokenService = ts;
   }
 
+  /**
+   * Inject AuditLogService for structured error logging.
+   * Uses WARN level only — never ERROR/CRITICAL — to avoid
+   * circular Telegram→audit→Telegram loops.
+   */
+  setAudit(audit: AuditLogService): void {
+    this.audit = audit;
+  }
+
   /* ------------------------------------------------------------------ */
   /*  Lifecycle                                                          */
   /* ------------------------------------------------------------------ */
@@ -54,11 +66,11 @@ export class TelegramService {
 
     // Launch in background (does not block)
     this.bot.launch().catch((err) => {
-      console.error("TelegramService: bot launch error", err);
+      this.logWarn("launch", "Bot launch error", err);
       this.launched = false;
     });
 
-    console.log("TelegramService: bot launched (polling)");
+    this.logInfo("launch", "Bot launched (polling)");
   }
 
   /**
@@ -68,7 +80,7 @@ export class TelegramService {
     if (!this.launched) return;
     this.bot.stop(signal);
     this.launched = false;
-    console.log("TelegramService: bot stopped");
+    this.logInfo("stop", "Bot stopped");
   }
 
   /* ------------------------------------------------------------------ */
@@ -87,7 +99,8 @@ export class TelegramService {
         parseMode ? { parse_mode: parseMode } : undefined,
       );
     } catch (err: any) {
-      console.error("TelegramService: notify failed", err?.message ?? err);
+      // WARN only — never ERROR — to prevent recursive audit→notify loop
+      this.logWarn("notify", "Send message failed", err);
     }
   }
 
@@ -124,8 +137,8 @@ export class TelegramService {
           } else {
             tokenInfo = "❌ No token available";
           }
-        } catch (err) {
-          console.error("TelegramService: token check failed", err);
+        } catch (err: any) {
+          this.logWarn("status", "Token check failed", err);
           tokenInfo = "⚠️ Token check failed";
         }
       }
@@ -200,7 +213,7 @@ export class TelegramService {
           );
         }
       } catch (err: any) {
-        console.error("Telegram /token error:", err?.message);
+        this.logWarn("/token", "Error storing token", err);
         ctx.reply(`❌ Error storing token: ${err?.message ?? "unknown"}`);
       }
     });
@@ -236,7 +249,7 @@ export class TelegramService {
           );
         }
       } catch (err: any) {
-        console.error("Telegram /renew error:", err?.message);
+        this.logWarn("/renew", "Renewal error", err);
         ctx.reply(`❌ Renewal error: ${err?.message ?? "unknown"}`);
       }
     });
@@ -261,5 +274,41 @@ export class TelegramService {
   /** Returns the underlying Telegraf instance (useful for testing). */
   getBot(): Telegraf {
     return this.bot;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Internal logging helpers                                           */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Log at WARN level (console + DB, never Telegram) to avoid circular loops.
+   */
+  private logWarn(action: string, message: string, err?: any): void {
+    if (this.audit) {
+      this.audit
+        .warn(LifecycleEvents.ERROR_OCCURRED, {
+          service: "TelegramService",
+          action,
+          error: message,
+          message: err?.message ?? String(err ?? ""),
+        })
+        .catch(() => {});
+    } else {
+      console.warn(`TelegramService [${action}]:`, message, err?.message ?? "");
+    }
+  }
+
+  private logInfo(action: string, message: string): void {
+    if (this.audit) {
+      this.audit
+        .info(LifecycleEvents.DHAN_API_CALL, {
+          service: "TelegramService",
+          action,
+          message,
+        })
+        .catch(() => {});
+    } else {
+      console.log(`TelegramService [${action}]:`, message);
+    }
   }
 }

@@ -20,6 +20,8 @@
 import axios from "axios";
 import type { AppConfig } from "../config/schema";
 import { StateStore } from "./stateStore";
+import { AuditLogService } from "./auditLogService";
+import { LifecycleEvents } from "../enums/trade";
 
 /** Profile response from GET /v2/profile */
 export interface DhanProfile {
@@ -63,6 +65,7 @@ export class TokenService {
   constructor(
     private cfg: AppConfig,
     private store: StateStore,
+    private audit: AuditLogService,
   ) {}
 
   /* ------------------------------------------------------------------ */
@@ -87,13 +90,23 @@ export class TokenService {
     // 2. Check environment variable (initial seed)
     const envToken = process.env.DHAN_ACCESS_TOKEN;
     if (envToken) {
-      console.log("TokenService: using DHAN_ACCESS_TOKEN from environment");
+      this.audit
+        .info(LifecycleEvents.TOKEN_REFRESHED, {
+          action: "getToken",
+          message: "Using DHAN_ACCESS_TOKEN from environment",
+        })
+        .catch(() => {});
       const isValid = await this.validateToken(envToken);
       if (isValid) {
         await this.persistToken(envToken);
         return envToken;
       }
-      console.warn("TokenService: env token is invalid/expired");
+      this.audit
+        .warn(LifecycleEvents.ERROR_OCCURRED, {
+          action: "getToken",
+          error: "Environment token is invalid/expired",
+        })
+        .catch(() => {});
     }
 
     // 3. Check Postgres (durable fallback)
@@ -107,7 +120,12 @@ export class TokenService {
         return dbRow.token;
       }
       // Token exists but is invalid/expired → try renewal
-      console.log("TokenService: DB token expired, attempting renewal…");
+      this.audit
+        .info(LifecycleEvents.TOKEN_REFRESHED, {
+          action: "getToken",
+          message: "DB token expired, attempting renewal",
+        })
+        .catch(() => {});
       const renewed = await this.renewToken(dbRow.token);
       if (renewed) return renewed;
     }
@@ -117,9 +135,11 @@ export class TokenService {
     if (generated) return generated;
 
     // 5. No token available
-    console.error(
-      "TokenService: no valid token found. Submit via Telegram /token or configure TOTP.",
-    );
+    await this.audit.critical(LifecycleEvents.ERROR_OCCURRED, {
+      action: "getToken",
+      error:
+        "No valid token found. Submit via Telegram /token or configure TOTP.",
+    });
     return null;
   }
 
@@ -131,7 +151,12 @@ export class TokenService {
   async setToken(token: string, expiresAt?: Date): Promise<boolean> {
     const isValid = await this.validateToken(token);
     if (!isValid) {
-      console.warn("TokenService: submitted token failed validation");
+      this.audit
+        .warn(LifecycleEvents.ERROR_OCCURRED, {
+          action: "setToken",
+          error: "Submitted token failed validation",
+        })
+        .catch(() => {});
       return false;
     }
 
@@ -145,7 +170,12 @@ export class TokenService {
     }
 
     await this.persistToken(token, expiry);
-    console.log("TokenService: token stored successfully");
+    this.audit
+      .info(LifecycleEvents.TOKEN_REFRESHED, {
+        action: "setToken",
+        message: "Token stored successfully",
+      })
+      .catch(() => {});
     return true;
   }
 
@@ -176,20 +206,27 @@ export class TokenService {
       );
 
       if (!data.accessToken) {
-        console.warn("TokenService: RenewToken response missing accessToken");
+        await this.audit.warn(LifecycleEvents.ERROR_OCCURRED, {
+          action: "renewToken",
+          error: "RenewToken response missing accessToken",
+          responseBody: data,
+        });
         return null;
       }
 
       const expiry = data.expiryTime ? new Date(data.expiryTime) : undefined;
       await this.persistToken(data.accessToken, expiry);
-      console.log("TokenService: token renewed successfully");
+      await this.audit.info(LifecycleEvents.TOKEN_REFRESHED, {
+        action: "renewToken",
+        message: "Token renewed successfully",
+        expiryTime: data.expiryTime,
+      });
       return data.accessToken;
     } catch (err: any) {
-      const status = err?.response?.status;
-      console.warn(
-        `TokenService: RenewToken failed (HTTP ${status ?? "?"}):`,
-        err?.message,
-      );
+      await this.audit.error(LifecycleEvents.ERROR_OCCURRED, {
+        action: "renewToken",
+        ...this.extractDhanError(err),
+      });
       return null;
     }
   }
@@ -225,25 +262,27 @@ export class TokenService {
       );
 
       if (!data.accessToken) {
-        console.warn(
-          "TokenService: generateAccessToken response missing accessToken",
-        );
+        await this.audit.warn(LifecycleEvents.ERROR_OCCURRED, {
+          action: "generateViaTotp",
+          error: "generateAccessToken response missing accessToken",
+          responseBody: data,
+        });
         return null;
       }
 
       const expiry = data.expiryTime ? new Date(data.expiryTime) : undefined;
       await this.persistToken(data.accessToken, expiry);
-      console.log(
-        "TokenService: token generated via TOTP. Expiry:",
-        data.expiryTime,
-      );
+      await this.audit.info(LifecycleEvents.TOKEN_REFRESHED, {
+        action: "generateViaTotp",
+        message: "Token generated via TOTP",
+        expiryTime: data.expiryTime,
+      });
       return data.accessToken;
     } catch (err: any) {
-      const status = err?.response?.status;
-      console.error(
-        `TokenService: TOTP generation failed (HTTP ${status ?? "?"}):`,
-        err?.response?.data ?? err?.message,
-      );
+      await this.audit.error(LifecycleEvents.ERROR_OCCURRED, {
+        action: "generateViaTotp",
+        ...this.extractDhanError(err),
+      });
       return null;
     }
   }
@@ -265,9 +304,20 @@ export class TokenService {
     } catch (err: any) {
       const status = err?.response?.status;
       if (status === 401 || status === 403) {
-        console.warn("TokenService: token validation failed (unauthorized)");
+        this.audit
+          .warn(LifecycleEvents.ERROR_OCCURRED, {
+            action: "fetchProfile",
+            error: "Token validation failed (unauthorized)",
+            httpStatus: status,
+          })
+          .catch(() => {});
       } else {
-        console.warn("TokenService: profile fetch error:", err?.message);
+        this.audit
+          .warn(LifecycleEvents.ERROR_OCCURRED, {
+            action: "fetchProfile",
+            ...this.extractDhanError(err),
+          })
+          .catch(() => {});
       }
       return null;
     }
@@ -280,12 +330,34 @@ export class TokenService {
   async invalidateToken(): Promise<void> {
     this.cachedToken = null;
     this.cachedTokenExpiry = null;
-    console.log("TokenService: cached token invalidated");
+    this.audit
+      .info(LifecycleEvents.TOKEN_REFRESHED, {
+        action: "invalidateToken",
+        message: "Cached token invalidated",
+      })
+      .catch(() => {});
   }
 
   /* ------------------------------------------------------------------ */
   /*  Internal helpers                                                   */
   /* ------------------------------------------------------------------ */
+
+  /** Extract Dhan-specific error details from an axios error for audit context. */
+  private extractDhanError(err: any): Record<string, any> {
+    const status = err?.response?.status;
+    const body = err?.response?.data;
+    return {
+      error: err?.message ?? String(err),
+      httpStatus: status,
+      dhanErrorCode: body?.errorCode ?? body?.internalErrorCode ?? undefined,
+      dhanMessage:
+        body?.errorMessage ??
+        body?.internalErrorMessage ??
+        body?.message ??
+        undefined,
+      responseBody: body,
+    };
+  }
 
   /** Check if in-memory cached token is expired. */
   private isExpired(): boolean {
@@ -315,7 +387,11 @@ export class TokenService {
         [new Date(), token, expiresAt ?? null],
       );
     } catch (err: any) {
-      console.error("TokenService: DB persist failed:", err?.message);
+      await this.audit.error(LifecycleEvents.ERROR_OCCURRED, {
+        action: "saveToDb",
+        error: "DB persist failed",
+        message: err?.message,
+      });
     }
   }
 
@@ -336,7 +412,11 @@ export class TokenService {
           : null,
       };
     } catch (err: any) {
-      console.error("TokenService: DB load failed:", err?.message);
+      await this.audit.error(LifecycleEvents.ERROR_OCCURRED, {
+        action: "loadFromDb",
+        error: "DB load failed",
+        message: err?.message,
+      });
       return null;
     }
   }

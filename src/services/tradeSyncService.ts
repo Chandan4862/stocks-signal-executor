@@ -12,6 +12,7 @@ import type { ValidatedTrade } from "../models/validatedTrade";
 import { StateStore } from "./stateStore";
 import {
   DhanService,
+  DhanApiError,
   PlaceOrderRequest,
   PlaceOrderResponse,
   PlaceSuperOrderRequest,
@@ -82,10 +83,11 @@ export class TradeSyncService {
         // Persist state (idempotency, trade record, audit)
         await this.persistBuyState(store, audit, validated, buyRes, at);
       } catch (err: any) {
-        await audit.critical(LifecycleEvents.ERROR_OCCURRED, {
-          id: at.id,
-          error: String(err?.message || err),
-        });
+        const payload =
+          err instanceof DhanApiError
+            ? { id: at.id, ...err.toAuditPayload() }
+            : { id: at.id, error: String(err?.message || err) };
+        await audit.critical(LifecycleEvents.ERROR_OCCURRED, payload);
       }
     }
   }
@@ -180,11 +182,19 @@ export class TradeSyncService {
               exitOrderId: exitRes.orderId,
             });
           } catch (err: any) {
-            await audit.critical(LifecycleEvents.ERROR_OCCURRED, {
-              id: tradeRow.id,
-              action: "Attach OCO Exception",
-              error: err.message,
-            });
+            const payload =
+              err instanceof DhanApiError
+                ? {
+                    id: tradeRow.id,
+                    action: "Attach OCO Exit",
+                    ...err.toAuditPayload(),
+                  }
+                : {
+                    id: tradeRow.id,
+                    action: "Attach OCO Exception",
+                    error: err.message,
+                  };
+            await audit.critical(LifecycleEvents.ERROR_OCCURRED, payload);
           }
         } else if (
           dhanOrder.orderStatus === "CANCELLED" ||
@@ -284,11 +294,19 @@ export class TradeSyncService {
                 "Analyst officially closed the trade. Liquidated position at Market.",
             });
           } catch (err: any) {
-            await audit.critical(LifecycleEvents.ERROR_OCCURRED, {
-              id: ct.id,
-              message: "Failed to liquidate closed trade",
-              error: err.message,
-            });
+            const payload =
+              err instanceof DhanApiError
+                ? {
+                    id: ct.id,
+                    action: "Liquidate closed trade",
+                    ...err.toAuditPayload(),
+                  }
+                : {
+                    id: ct.id,
+                    message: "Failed to liquidate closed trade",
+                    error: err.message,
+                  };
+            await audit.critical(LifecycleEvents.ERROR_OCCURRED, payload);
           }
         }
       }

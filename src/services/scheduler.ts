@@ -18,6 +18,7 @@ import { TSLService } from "./tslService";
 import { AuditLogService } from "./auditLogService";
 import { InstrumentLookupService } from "./instrumentLookupService";
 import { TelegramService } from "./telegramService";
+import { LifecycleEvents } from "../enums/trade";
 
 export class Scheduler {
   private timer: NodeJS.Timeout | null = null;
@@ -29,10 +30,7 @@ export class Scheduler {
 
   start() {
     if (this.timer) return;
-    this.tick().catch((err) => console.error("Scheduler tick error:", err));
-    // this.timer = setInterval(() => {
-    //   this.tick().catch((err) => console.error("Scheduler tick error:", err));
-    // }, this.cfg.pollingIntervalMs);
+    this.tick().catch(() => {});
     console.log(
       "Scheduler started with interval",
       this.cfg.pollingIntervalMs,
@@ -47,11 +45,19 @@ export class Scheduler {
     }
   }
 
+  // Scheduler.tick()
+  //   └→ TokenService.getToken()
+  //       └→ valid token? → DhanService uses it for all API calls
+  //       └→ null?        → Telegram alert, tick skipped
+
+  // DhanService (on 401/403)
+  //   └→ TokenService.invalidateToken()  // clear cache
+  //   └→ TokenService.getToken()         // falls through to DB → renew → TOTP
+
   private async tick(): Promise<void> {
     await backoff(
       async () => {
         const store = new StateStore(this.cfg);
-        const tokens = new TokenService(this.cfg, store);
         const tradeSync = new TradeSyncService(this.cfg);
         const qtyResolver = new QuantityResolverService();
         const tsl = new TSLService({
@@ -60,23 +66,37 @@ export class Scheduler {
           trailingStepPct: this.cfg.tsl.trailingStepPct,
         });
 
+        // Create audit early (Telegram-only until PG connects)
+        let audit = new AuditLogService(null, this.telegram);
+
         // Connect Postgres
         try {
           await store.connect();
-        } catch {
-          console.error("Failed to connect to Postgres DB");
+        } catch (err: any) {
+          await audit.critical(LifecycleEvents.ERROR_OCCURRED, {
+            action: "Scheduler.tick",
+            error: "Failed to connect to Postgres DB",
+            message: err?.message,
+          });
+          return;
         }
 
-        const audit = new AuditLogService(store.pg, this.telegram);
+        // Upgrade audit with PG client now that connection is live
+        audit = new AuditLogService(store.pg, this.telegram);
+        const tokens = new TokenService(this.cfg, store, audit);
         const dhan = new DhanService(this.cfg, tokens, audit);
 
         // Inject TokenService into TelegramService for /token and /renew
         this.telegram.setTokenService(tokens);
+        this.telegram.setAudit(audit);
 
         const instrumentLookup = new InstrumentLookupService(store.pg);
 
-        console.log("Scheduler tick started at", new Date().toISOString());
-
+        await audit.info(LifecycleEvents.DHAN_API_CALL, {
+          action: "Scheduler.tick",
+          message: "Tick started",
+          timestamp: new Date().toISOString(),
+        });
         try {
           // ── Step 1: Ensure valid token ──
           const token = await tokens.getToken();
@@ -87,7 +107,10 @@ export class Scheduler {
               "• `/token YOUR_ACCESS_TOKEN`\n" +
               "• Or configure `DHAN_PIN` \\+ `DHAN_TOTP_SECRET` for auto\\-generation";
             await this.telegram.notify(msg, "MarkdownV2");
-            console.warn("Scheduler: no valid token — skipping tick");
+            await audit.critical(LifecycleEvents.ERROR_OCCURRED, {
+              action: "Scheduler.tick",
+              error: "No valid token — trading paused",
+            });
             return;
           }
 
