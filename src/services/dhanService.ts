@@ -504,4 +504,46 @@ export class DhanService {
       return data;
     });
   }
+
+  /* ------------------------------------------------------------------ */
+  /*  Order query operations                                             */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Fetch a single order by ID.
+   * Used to check exit order status for entered trades.
+   */
+  async getOrderById(orderId: string): Promise<any> {
+    return this.withAuthRetry(async (http) => {
+      const { data } = await http.get(`/orders/${orderId}`);
+      return data;
+    });
+  }
+
+  /**
+   * Fetch all orders for the day.
+   */
+  async getOrders(): Promise<any[]> {
+    return this.withAuthRetry(async (http) => {
+      const { data } = await http.get("/orders");
+      if (!Array.isArray(data)) return [];
+      return data;
+    });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Position operations                                                */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Fetch all current positions from Dhan.
+   * Used for reconciliation between local trades table and Dhan state.
+   */
+  async getPositions(): Promise<any[]> {
+    return this.withAuthRetry(async (http) => {
+      const { data } = await http.get("/positions");
+      if (!Array.isArray(data)) return [];
+      return data;
+    });
+  }
 }

@@ -281,7 +281,13 @@ export class TradeSyncService {
                 `Symbol: ${tradeRow.symbol}\n` +
                 `Analyst closed before entry triggered. Pending order cancelled.`,
             );
-          } catch (err: any) {}
+          } catch (err: any) {
+            await audit.error(LifecycleEvents.ERROR_OCCURRED, {
+              id: ct.id,
+              action: "Cancel pre-entry order on analyst close",
+              error: err?.message ?? String(err),
+            });
+          }
         } else if (tradeRow.state === "ENTERED") {
           try {
             if (tradeRow.exit_order_id) {
@@ -307,6 +313,8 @@ export class TradeSyncService {
               `UPDATE trades SET state = 'CLOSED_BY_ANALYST', exited_at = NOW(), exit_price = $1 WHERE id = $2`,
               [exitPrice, ct.id],
             );
+
+            await this.recordPnl(store, tradeRow, exitPrice);
 
             await audit.info(LifecycleEvents.SELL_PLACED, {
               id: ct.id,
@@ -342,6 +350,203 @@ export class TradeSyncService {
         action: "processClosedTrades",
         error: err.message,
       });
+    }
+  }
+  // Phase 5: Monitor ENTERED trades — check if exit orders (OCO) have triggered
+  // ┌───────────────────────────────────────────────────────────────────┐
+  // │  monitorEnteredTrades (runs on polling interval)                  │
+  // │                                                                   │
+  // │  1. SELECT trades WHERE state = 'ENTERED'                         │
+  // │  2. For each trade with exit_order_id:                            │
+  // │     └─ Fetch order status from Dhan                               │
+  // │        ├─ TRADED     → mark CLOSED, record PnL, notify 📤        │
+  // │        ├─ CANCELLED  → alert 🔴 (position unprotected)           │
+  // │        ├─ REJECTED   → alert 🔴                                  │
+  // │        ├─ EXPIRED    → alert 🔴                                  │
+  // │        └─ PENDING    → do nothing                                 │
+  // │  3. Cross-check Dhan positions for manual exits                   │
+  // └───────────────────────────────────────────────────────────────────┘
+  async monitorEnteredTrades(
+    store: StateStore,
+    dhan: DhanService,
+    audit: AuditLogService,
+  ): Promise<void> {
+    try {
+      // 1. Query all ENTERED trades
+      const enteredRes = await store.pg.query(
+        `SELECT * FROM trades WHERE state = 'ENTERED' AND exit_order_id IS NOT NULL`,
+      );
+      if (enteredRes.rows.length === 0) return;
+
+      // 2. Fetch all today's orders from Dhan (batch — avoids N+1 API calls)
+      const allOrders = await dhan.getOrders();
+      // Also fetch forever orders (OCO exits are forever orders)
+      const foreverOrders = await dhan.getForeverOrders();
+      const combinedOrders = [...allOrders, ...foreverOrders];
+
+      for (const tradeRow of enteredRes.rows) {
+        // Find the exit order in Dhan's order list
+        const exitOrder = combinedOrders.find(
+          (o) => String(o.orderId) === String(tradeRow.exit_order_id),
+        );
+
+        if (!exitOrder) {
+          // Exit order not found — might be from a previous day or manually deleted
+          // Check if position still exists on Dhan
+          continue;
+        }
+
+        if (exitOrder.orderStatus === "TRADED") {
+          // Exit triggered! SL or Target hit.
+          const exitPrice =
+            typeof exitOrder.price === "number" && exitOrder.price > 0
+              ? exitOrder.price
+              : Number(tradeRow.entry_price);
+
+          await store.pg.query(
+            `UPDATE trades SET state = 'CLOSED', exited_at = NOW(), exit_price = $1 WHERE id = $2`,
+            [exitPrice, tradeRow.id],
+          );
+
+          await this.recordPnl(store, tradeRow, exitPrice);
+
+          const entryPrice = Number(tradeRow.entry_price);
+          const pnl = (exitPrice - entryPrice) * tradeRow.quantity;
+          const pnlSign = pnl >= 0 ? "+" : "";
+          const emoji = pnl >= 0 ? "🟢" : "🔴";
+
+          await audit.info(LifecycleEvents.SELL_PLACED, {
+            id: tradeRow.id,
+            message: "Exit order TRADED. Position closed.",
+            exitPrice,
+            pnl,
+          });
+
+          await audit.notify(
+            `${emoji} EXIT Triggered — Position Closed\n` +
+              `Symbol: ${tradeRow.symbol}\n` +
+              `Entry: ₹${entryPrice} → Exit: ₹${exitPrice}\n` +
+              `Qty: ${tradeRow.quantity} | PnL: ${pnlSign}₹${pnl.toFixed(2)}`,
+          );
+        } else if (
+          exitOrder.orderStatus === "CANCELLED" ||
+          exitOrder.orderStatus === "REJECTED" ||
+          exitOrder.orderStatus === "EXPIRED"
+        ) {
+          // Exit order failed — position is UNPROTECTED!
+          await audit.critical(LifecycleEvents.ERROR_OCCURRED, {
+            id: tradeRow.id,
+            action: "monitorEnteredTrades",
+            error: `Exit order ${exitOrder.orderStatus} — position UNPROTECTED!`,
+            exitOrderId: tradeRow.exit_order_id,
+            symbol: tradeRow.symbol,
+            quantity: tradeRow.quantity,
+          });
+
+          await audit.notify(
+            `🚨 EXIT ORDER ${exitOrder.orderStatus}\n` +
+              `Symbol: ${tradeRow.symbol}\n` +
+              `Qty: ${tradeRow.quantity} — Position UNPROTECTED!\n` +
+              `Exit Order: ${tradeRow.exit_order_id}\n` +
+              `Manual action required.`,
+          );
+        }
+      }
+    } catch (err: any) {
+      await audit.error(LifecycleEvents.ERROR_OCCURRED, {
+        action: "monitorEnteredTrades",
+        error: err?.message ?? String(err),
+      });
+    }
+  }
+
+  // Phase 6: Reconcile Dhan positions with local trades table
+  // Safety net — catches anything that slipped through the cracks.
+  async reconcilePositions(
+    store: StateStore,
+    dhan: DhanService,
+    audit: AuditLogService,
+  ): Promise<void> {
+    try {
+      const positions = await dhan.getPositions();
+      if (!Array.isArray(positions)) return;
+
+      // 1. Query all locally ENTERED trades
+      const enteredRes = await store.pg.query(
+        `SELECT * FROM trades WHERE state = 'ENTERED'`,
+      );
+
+      const localSecurityIds = new Set(
+        enteredRes.rows.map((r: any) => String(r.security_id)),
+      );
+
+      // 2. Check for stale ENTERED trades (locally ENTERED but no position on Dhan)
+      // A position with netQty=0 means fully exited
+      for (const tradeRow of enteredRes.rows) {
+        const pos = positions.find(
+          (p) => String(p.securityId) === String(tradeRow.security_id),
+        );
+
+        if (!pos || pos.netQty === 0) {
+          // Position doesn't exist on Dhan but trade is ENTERED locally
+          // → the exit happened outside our knowledge (manual sell, Dhan app, etc.)
+          await store.pg.query(
+            `UPDATE trades SET state = 'CLOSED', exited_at = NOW() WHERE id = $1`,
+            [tradeRow.id],
+          );
+
+          await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
+            id: tradeRow.id,
+            action: "reconcilePositions",
+            message:
+              "Trade was ENTERED locally but no position found on Dhan. Marked CLOSED.",
+            symbol: tradeRow.symbol,
+          });
+
+          await audit.notify(
+            `⚠️ Position Reconciled\n` +
+              `Symbol: ${tradeRow.symbol}\n` +
+              `Was ENTERED locally but no Dhan position found.\n` +
+              `Marked CLOSED (likely manual exit from Dhan app).`,
+          );
+        }
+      }
+    } catch (err: any) {
+      await audit.error(LifecycleEvents.ERROR_OCCURRED, {
+        action: "reconcilePositions",
+        error: err?.message ?? String(err),
+      });
+    }
+  }
+
+  /**
+   * Record realized PnL into pnl_records table.
+   */
+  private async recordPnl(
+    store: StateStore,
+    tradeRow: any,
+    exitPrice: number,
+  ): Promise<void> {
+    try {
+      const entryPrice = Number(tradeRow.entry_price);
+      const quantity = Number(tradeRow.quantity);
+      const pnl = (exitPrice - entryPrice) * quantity;
+
+      await store.pg.query(
+        `INSERT INTO pnl_records (trade_id, tradingsymbol, quantity, entry_price, exit_price, realized_pnl, exited_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+        [
+          tradeRow.id,
+          tradeRow.tradingsymbol || tradeRow.symbol,
+          quantity,
+          entryPrice,
+          exitPrice,
+          pnl,
+        ],
+      );
+    } catch (err: any) {
+      // PnL recording failure should not break trade flow
+      console.error("recordPnl failed:", err?.message);
     }
   }
 

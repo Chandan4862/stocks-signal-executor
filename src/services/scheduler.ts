@@ -131,6 +131,12 @@ export class Scheduler {
 
           // Phase 4: Handle external closures from Closed API
           await tradeSync.processClosedTrades(store, dhan, audit);
+
+          // Phase 5: Monitor ENTERED trades - detect SL/target hits, manual exits
+          await tradeSync.monitorEnteredTrades(store, dhan, audit);
+
+          // Phase 6: Reconcile Dhan positions with local trades table
+          await tradeSync.reconcilePositions(store, dhan, audit);
         } finally {
           await store.disconnect();
         }
