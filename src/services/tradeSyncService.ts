@@ -181,6 +181,14 @@ export class TradeSyncService {
               entryPrice: tradedPrice,
               exitOrderId: exitRes.orderId,
             });
+
+            await audit.notify(
+              `✅ ENTRY Triggered\n` +
+                `Symbol: ${tradeRow.symbol}\n` +
+                `Entered @ ₹${tradedPrice} | Qty: ${tradeRow.quantity}\n` +
+                `OCO Exit placed: ${exitRes.orderId}\n` +
+                `Target: ₹${tradeRow.target} | SL: ₹${tradeRow.sl_trigger}`,
+            );
           } catch (err: any) {
             const payload =
               err instanceof DhanApiError
@@ -211,6 +219,12 @@ export class TradeSyncService {
             action: "Entry Order Cancelled/Rejected",
             orderStatus: dhanOrder.orderStatus,
           });
+
+          await audit.notify(
+            `⛔ Entry Order ${dhanOrder.orderStatus}\n` +
+              `Symbol: ${tradeRow.symbol}\n` +
+              `Order: ${tradeRow.buy_order_id}`,
+          );
         }
       }
     } catch (err: any) {
@@ -261,6 +275,12 @@ export class TradeSyncService {
               message:
                 "Trade closed by analyst before entry executed. Cancelled pending Forever order.",
             });
+
+            await audit.notify(
+              `🔄 Trade Closed (Pre-Entry)\n` +
+                `Symbol: ${tradeRow.symbol}\n` +
+                `Analyst closed before entry triggered. Pending order cancelled.`,
+            );
           } catch (err: any) {}
         } else if (tradeRow.state === "ENTERED") {
           try {
@@ -293,6 +313,13 @@ export class TradeSyncService {
               message:
                 "Analyst officially closed the trade. Liquidated position at Market.",
             });
+
+            await audit.notify(
+              `📤 SELL — Analyst Closed Trade\n` +
+                `Symbol: ${tradeRow.symbol}\n` +
+                `Liquidated @ Market (₹${exitPrice})\n` +
+                `Entry was ₹${tradeRow.entry_price}`,
+            );
           } catch (err: any) {
             const payload =
               err instanceof DhanApiError
@@ -577,7 +604,7 @@ export class TradeSyncService {
       ],
     );
 
-    await audit.record(LifecycleEvents.BUY_PLACED, {
+    await audit.info(LifecycleEvents.BUY_PLACED, {
       id: v.id,
       orderId: buyRes.orderId,
       securityId: v.securityId,
@@ -588,6 +615,14 @@ export class TradeSyncService {
       slTrigger: v.slTrigger,
       isForeverOrder: true,
     });
+
+    await audit.notify(
+      `📥 AWAITING ENTRY — Buy Order Placed\n` +
+        `Symbol: ${v.symbol}\n` +
+        `Qty: ${v.quantity} @ ₹${v.entryPrice}\n` +
+        `Target: ₹${v.target ?? "—"} | SL: ₹${v.slTrigger}\n` +
+        `Order: ${buyRes.orderId} (${buyRes.orderStatus})`,
+    );
   }
 
   // Normalize API payloads (Phase 1): parse strings -> numbers & parse meta_data

@@ -145,6 +145,24 @@ export class AuditLogService {
   }
 
   /* ------------------------------------------------------------------ */
+  /*  Direct Telegram notification (for trade alerts, not errors)         */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Send a notification directly to Telegram.
+   * Use this for trade state changes, not for error alerts.
+   */
+  async notify(text: string): Promise<void> {
+    if (this.telegram) {
+      try {
+        await this.telegram.notify(text);
+      } catch {
+        // Telegram failure should never break the main flow
+      }
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
   /*  Internal                                                           */
   /* ------------------------------------------------------------------ */
 
