@@ -41,6 +41,7 @@ export function loadConfig(): AppConfig {
     perTradeCapital: Number(env.PER_TRADE_CAPITAL || 10000),
     maxActiveTrades: Number(env.MAX_ACTIVE_TRADES || 10),
     useSuperOrder: bool(env.USE_SUPER_ORDER, true),
+    postbackPort: env.POSTBACK_PORT ? Number(env.POSTBACK_PORT) : undefined,
     env: (env.NODE_ENV as any) || "development",
     tsl: {
       incrementRs: Number(env.TSL_INCREMENT_RS || 2),

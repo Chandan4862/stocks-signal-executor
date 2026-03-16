@@ -67,3 +67,21 @@ CREATE TABLE IF NOT EXISTS instrument_list_nse_eq (
 );
 CREATE INDEX IF NOT EXISTS idx_instrument_security_id ON instrument_list_nse_eq (security_id);
 CREATE INDEX IF NOT EXISTS idx_instrument_underlying_symbol ON instrument_list_nse_eq (underlying_symbol);
+
+CREATE TABLE IF NOT EXISTS postback_log (
+  id BIGSERIAL PRIMARY KEY,
+  order_id TEXT NOT NULL,
+  correlation_id TEXT,
+  order_status TEXT NOT NULL,
+  transaction_type TEXT,
+  security_id TEXT,
+  trading_symbol TEXT,
+  quantity INTEGER,
+  filled_qty INTEGER,
+  price NUMERIC(12,2),
+  trigger_price NUMERIC(12,2),
+  raw JSONB NOT NULL,
+  processed BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_postback_order_id ON postback_log (order_id);

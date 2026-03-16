@@ -61,6 +61,13 @@ export class TokenService {
   /** In-memory token cache — replaces Redis fast path */
   private cachedToken: string | null = null;
   private cachedTokenExpiry: Date | null = null;
+  /** Guard to prevent repeated renewal attempts within a short window */
+  private renewalAttemptedAt: number = 0;
+
+  /** How early (in ms) to proactively renew before expiry. Default: 2 hours */
+  private static readonly RENEWAL_WINDOW_MS = 2 * 60 * 60 * 1000;
+  /** Minimum gap between renewal attempts. Default: 10 minutes */
+  private static readonly RENEWAL_COOLDOWN_MS = 10 * 60 * 1000;
 
   constructor(
     private cfg: AppConfig,
@@ -84,6 +91,8 @@ export class TokenService {
   async getToken(): Promise<string | null> {
     // 1. Check in-memory cache
     if (this.cachedToken && !this.isExpired()) {
+      // Proactive renewal: if token is valid but nearing expiry, renew in background
+      this.maybeProactiveRenew();
       return this.cachedToken;
     }
 
@@ -186,6 +195,63 @@ export class TokenService {
   async validateToken(token: string): Promise<boolean> {
     const profile = await this.fetchProfile(token);
     return profile !== null;
+  }
+
+  /**
+   * Proactive renewal: if the cached token is within 2 hours of expiry,
+   * renew it in the background. Never blocks getToken().
+   */
+  private maybeProactiveRenew(): void {
+    if (!this.cachedToken || !this.cachedTokenExpiry) return;
+
+    const now = Date.now();
+    const msUntilExpiry = this.cachedTokenExpiry.getTime() - now;
+
+    // Not near expiry yet
+    if (msUntilExpiry > TokenService.RENEWAL_WINDOW_MS) return;
+
+    // Cooldown: don't retry within 10 minutes
+    if (now - this.renewalAttemptedAt < TokenService.RENEWAL_COOLDOWN_MS)
+      return;
+
+    this.renewalAttemptedAt = now;
+    const token = this.cachedToken;
+    const hoursLeft = (msUntilExpiry / 3600000).toFixed(1);
+
+    // Fire and forget — runs in background
+    this.renewToken(token)
+      .then((newToken) => {
+        if (newToken) {
+          this.audit
+            .info(LifecycleEvents.TOKEN_REFRESHED, {
+              action: "proactiveRenew",
+              message: `Token renewed proactively (${hoursLeft}h before expiry)`,
+            })
+            .catch(() => {});
+
+          this.audit
+            .notify(
+              `🔄 Token auto-renewed\n` +
+                `Was expiring in ${hoursLeft}h — renewed for another 24h.`,
+            )
+            .catch(() => {});
+        } else {
+          this.audit
+            .warn(LifecycleEvents.ERROR_OCCURRED, {
+              action: "proactiveRenew",
+              error: `Renewal returned null (${hoursLeft}h until expiry). Will retry.`,
+            })
+            .catch(() => {});
+        }
+      })
+      .catch((err) => {
+        this.audit
+          .warn(LifecycleEvents.ERROR_OCCURRED, {
+            action: "proactiveRenew",
+            error: `Renewal failed: ${err?.message}. ${hoursLeft}h until expiry.`,
+          })
+          .catch(() => {});
+      });
   }
 
   /**
