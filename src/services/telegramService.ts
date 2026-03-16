@@ -20,12 +20,14 @@ import { Telegraf } from "telegraf";
 import { TokenService, DhanProfile } from "./tokenService";
 import { AuditLogService } from "./auditLogService";
 import { LifecycleEvents } from "../enums/trade";
+import type { Scheduler } from "./scheduler";
 
 export class TelegramService {
   private bot: Telegraf;
   private launched = false;
   private tokenService?: TokenService;
   private audit?: AuditLogService;
+  private scheduler?: Scheduler;
 
   constructor(
     private botToken: string,
@@ -51,6 +53,13 @@ export class TelegramService {
    */
   setAudit(audit: AuditLogService): void {
     this.audit = audit;
+  }
+
+  /**
+   * Inject Scheduler for /trade command.
+   */
+  setScheduler(scheduler: Scheduler): void {
+    this.scheduler = scheduler;
   }
 
   /* ------------------------------------------------------------------ */
@@ -268,6 +277,24 @@ export class TelegramService {
       }
     });
 
+    // /trade — manually trigger trade scan (Phases 2+4)
+    this.bot.command("trade", async (ctx) => {
+      if (!this.scheduler) {
+        ctx.reply("⚠️ Scheduler not initialized yet. Try again later.");
+        return;
+      }
+
+      ctx.reply("🔄 Running trade scan (Phases 2+4)…");
+
+      try {
+        const result = await this.scheduler.runTradeScan();
+        ctx.reply(result);
+      } catch (err: any) {
+        this.logWarn("/trade", "Trade scan error", err);
+        ctx.reply(`❌ Trade scan error: ${err?.message ?? "unknown"}`);
+      }
+    });
+
     // --- Health-check echo: "Hello" → "World 🌍" ---
     this.bot.hears(/^hello$/i, (ctx) => {
       ctx.reply("World 🌍");
@@ -276,7 +303,7 @@ export class TelegramService {
     // Catch-all for unrecognised text
     this.bot.on("text", (ctx) => {
       ctx.reply(
-        "🤷 Unknown command. Try /start, /status, /positions, /pnl, /logs, /token, or /renew.",
+        "🤷 Unknown command. Try /start, /status, /trade, /token, or /renew.",
       );
     });
   }

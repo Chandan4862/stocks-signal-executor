@@ -9,7 +9,7 @@ import { DhanService, PlaceOrderResponse } from "../src/services/dhanService";
 import { InstrumentLookupService } from "../src/services/instrumentLookupService";
 
 import activeApiResponse from "./fixtures/active-api-response.json";
-
+// npx vitest run tests/tradeSync.test.ts 2>&1
 // ─── Shared Config ──────────────────────────────────────────────────────────
 const baseCfg = {
   kite: {},

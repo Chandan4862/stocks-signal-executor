@@ -20,6 +20,7 @@ async function main() {
 
   // --- Scheduler ---
   const scheduler = new Scheduler(config, telegram);
+  telegram.setScheduler(scheduler);
   scheduler.start();
 
   // --- Postback Webhook Server (optional) ---

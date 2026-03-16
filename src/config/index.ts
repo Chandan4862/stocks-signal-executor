@@ -36,7 +36,7 @@ export function loadConfig(): AppConfig {
       defaultChatId: env.TELEGRAM_CHAT_ID,
       tradesChatId: env.TELEGRAM_TRADES_CHAT_ID || undefined,
     },
-    pollingIntervalMs: Number(env.POLLING_INTERVAL_MS || 15000),
+    pollingIntervalMs: Number(env.POLLING_INTERVAL_MS || 3600000),
     maxTradeCapital: Number(env.MAX_TRADE_CAPITAL || 10000),
     perTradeCapital: Number(env.PER_TRADE_CAPITAL || 10000),
     maxActiveTrades: Number(env.MAX_ACTIVE_TRADES || 10),
