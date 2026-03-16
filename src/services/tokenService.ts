@@ -236,6 +236,12 @@ export class TokenService {
    * Requires DHAN_PIN and DHAN_TOTP_SECRET (or DHAN_TOTP) in config.
    * Returns the new token on success, null on failure.
    */
+
+  // What is TOTP?
+  // TOTP (Time-based One-Time Password) is a way for your server to
+  // generate the same 6-digit code that an authenticator app
+  // (like Google Authenticator) would show — without human intervention.
+
   async generateViaTotp(): Promise<string | null> {
     const pin = this.cfg.dhan.pin;
     const totpSecret = this.cfg.dhan.totpSecret;
