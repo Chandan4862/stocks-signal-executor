@@ -35,6 +35,7 @@ export const AppConfigSchema = z.object({
   telegram: z.object({
     botToken: z.string().min(1),
     defaultChatId: z.string().min(1),
+    tradesChatId: z.string().optional(),
   }),
   pollingIntervalMs: z.number().int().positive(),
   maxTradeCapital: z.number().positive(),

@@ -11,6 +11,7 @@ async function main() {
   const telegram = new TelegramService(
     config.telegram.botToken,
     config.telegram.defaultChatId,
+    config.telegram.tradesChatId,
   );
   await telegram.launch();
 

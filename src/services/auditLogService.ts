@@ -15,6 +15,7 @@ import { LifecycleEvents, LogLevel } from "../enums/trade";
 /** Telegram notifier interface — avoids circular dependency on TelegramService */
 export interface TelegramNotifier {
   notify(text: string, parseMode?: "MarkdownV2" | "HTML"): Promise<void>;
+  notifyTrades(text: string): Promise<void>;
 }
 
 const LEVEL_LABELS: Record<LogLevel, string> = {
@@ -149,13 +150,13 @@ export class AuditLogService {
   /* ------------------------------------------------------------------ */
 
   /**
-   * Send a notification directly to Telegram.
-   * Use this for trade state changes, not for error alerts.
+   * Send a trade notification to the dedicated Trades channel.
+   * Uses notifyTrades() → TELEGRAM_TRADES_CHAT_ID (falls back to default).
    */
   async notify(text: string): Promise<void> {
     if (this.telegram) {
       try {
-        await this.telegram.notify(text);
+        await this.telegram.notifyTrades(text);
       } catch {
         // Telegram failure should never break the main flow
       }

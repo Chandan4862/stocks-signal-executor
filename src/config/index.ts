@@ -34,6 +34,7 @@ export function loadConfig(): AppConfig {
     telegram: {
       botToken: env.TELEGRAM_BOT_TOKEN,
       defaultChatId: env.TELEGRAM_CHAT_ID,
+      tradesChatId: env.TELEGRAM_TRADES_CHAT_ID || undefined,
     },
     pollingIntervalMs: Number(env.POLLING_INTERVAL_MS || 15000),
     maxTradeCapital: Number(env.MAX_TRADE_CAPITAL || 10000),

@@ -30,6 +30,7 @@ export class TelegramService {
   constructor(
     private botToken: string,
     private defaultChatId: string,
+    private tradesChatId?: string,
   ) {
     this.bot = new Telegraf(this.botToken);
     this.registerHandlers();
@@ -101,6 +102,19 @@ export class TelegramService {
     } catch (err: any) {
       // WARN only — never ERROR — to prevent recursive audit→notify loop
       this.logWarn("notify", "Send message failed", err);
+    }
+  }
+
+  /**
+   * Send a trade notification to the dedicated trades channel.
+   * Falls back to the default channel if tradesChatId is not configured.
+   */
+  async notifyTrades(text: string): Promise<void> {
+    const chatId = this.tradesChatId || this.defaultChatId;
+    try {
+      await this.bot.telegram.sendMessage(chatId, text);
+    } catch (err: any) {
+      this.logWarn("notifyTrades", "Send trade notification failed", err);
     }
   }
 
