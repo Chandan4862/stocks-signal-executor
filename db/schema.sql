@@ -8,15 +8,30 @@ CREATE TABLE IF NOT EXISTS trades (
   entry_price NUMERIC(12,2) NOT NULL,
   quantity INTEGER NOT NULL,
   state TEXT NOT NULL,
+  security_id TEXT,
+  symbol TEXT,
+  buy_order_id TEXT,
+  exit_order_id TEXT,
+  target NUMERIC(12,2),
+  sl_trigger NUMERIC(12,2),
+  capital NUMERIC(12,2),
+  reco JSONB,
   entered_at TIMESTAMPTZ,
   exited_at TIMESTAMPTZ,
-  exit_price NUMERIC(12,2)
+  exit_price NUMERIC(12,2),
+  processed_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS idempotency (
+  action_key TEXT PRIMARY KEY,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
   id BIGSERIAL PRIMARY KEY,
   trade_id BIGINT,
   event TEXT NOT NULL,
+  level TEXT NOT NULL DEFAULT 'INFO',
   payload JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

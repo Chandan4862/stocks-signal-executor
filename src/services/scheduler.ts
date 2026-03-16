@@ -1,7 +1,7 @@
 /*
   Scheduler: Polls Active/Closed APIs on an interval; wraps retry/backoff.
   On each tick:
-    1. Ensure valid token (Redis/DB/TOTP) — pause trading if unavailable
+    1. Ensure valid token (DB/TOTP) — pause trading if unavailable
     2. Fetch Active/Closed trades and reconcile
     3. Execute BUY + initial SL for new trades
     4. Persist and notify
@@ -52,7 +52,6 @@ export class Scheduler {
       async () => {
         const store = new StateStore(this.cfg);
         const tokens = new TokenService(this.cfg, store);
-        const dhan = new DhanService(this.cfg, tokens, store);
         const tradeSync = new TradeSyncService(this.cfg);
         const qtyResolver = new QuantityResolverService();
         const tsl = new TSLService({
@@ -61,17 +60,19 @@ export class Scheduler {
           trailingStepPct: this.cfg.tsl.trailingStepPct,
         });
 
-        // Connect PG (Redis auto connects)
+        // Connect Postgres
         try {
           await store.connect();
         } catch {
           console.error("Failed to connect to Postgres DB");
         }
 
+        const audit = new AuditLogService(store.pg, this.telegram);
+        const dhan = new DhanService(this.cfg, tokens, audit);
+
         // Inject TokenService into TelegramService for /token and /renew
         this.telegram.setTokenService(tokens);
 
-        const audit = new AuditLogService(store.pg);
         const instrumentLookup = new InstrumentLookupService(store.pg);
 
         console.log("Scheduler tick started at", new Date().toISOString());

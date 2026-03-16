@@ -91,7 +91,8 @@ export interface PlaceSuperOrderRequest {
   trailingJump?: number; // absolute Rs jump for trailing
 }
 
-import { StateStore } from "./stateStore";
+import { AuditLogService } from "./auditLogService";
+import { LifecycleEvents } from "../enums/trade";
 
 export class DhanService {
   private http?: AxiosInstance;
@@ -100,7 +101,7 @@ export class DhanService {
   constructor(
     private cfg: AppConfig,
     private tokens: TokenService,
-    private store: StateStore,
+    private audit: AuditLogService,
   ) {}
 
   /* ------------------------------------------------------------------ */
@@ -156,13 +157,10 @@ export class DhanService {
         const curlCommand =
           `> [Dhan API] cURL:\ncurl -X ${method} '${url}' \\\n  ${headers} \\\n  ${data}`.trim();
 
-        // Log to Redis list instead of console
-        // fetch by: redis-cli lrange logs:dhan:curl 0 10
-        this.store.redis.lpush("logs:dhan:curl", curlCommand).catch((err) => {
-          console.error("Failed to write Dhan curl to redis", err);
-        });
-        // Keep only the latest 100 curl logs
-        this.store.redis.ltrim("logs:dhan:curl", 0, 99).catch(() => {});
+        // Log to audit_logs table
+        this.audit
+          .debug(LifecycleEvents.DHAN_API_CALL, { curl: curlCommand })
+          .catch(() => {});
 
         return config;
       });

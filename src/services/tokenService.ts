@@ -13,13 +13,12 @@
       GET https://api.dhan.co/v2/profile → { tokenValidity: "DD/MM/YYYY HH:mm" }
 
   Storage:
-  • Redis key `broker:token` with TTL (fast path)
+  • In-memory cache (fast path within same process)
   • Postgres `token_store` row (durable fallback + audit)
 */
 
 import axios from "axios";
 import type { AppConfig } from "../config/schema";
-import { RedisKeys } from "../state/redisKeys";
 import { StateStore } from "./stateStore";
 
 /** Profile response from GET /v2/profile */
@@ -55,9 +54,12 @@ interface RenewTokenResponse {
 
 const DHAN_AUTH_BASE = "https://auth.dhan.co";
 const DHAN_API_BASE = "https://api.dhan.co/v2";
-const DEFAULT_TOKEN_TTL_SECONDS = 23 * 60 * 60; // 23h (conservative for 24h token)
 
 export class TokenService {
+  /** In-memory token cache — replaces Redis fast path */
+  private cachedToken: string | null = null;
+  private cachedTokenExpiry: Date | null = null;
+
   constructor(
     private cfg: AppConfig,
     private store: StateStore,
@@ -69,7 +71,7 @@ export class TokenService {
 
   /**
    * Get a valid access token. Resolution order:
-   *  1. Redis cache (fast path)
+   *  1. In-memory cache (fast path)
    *  2. Postgres token_store (durable fallback)
    *  3. If found but expired, attempt renewal via RenewToken API
    *  4. If TOTP credentials are configured, attempt auto-generation
@@ -77,10 +79,9 @@ export class TokenService {
    * Returns null only if no token can be obtained.
    */
   async getToken(): Promise<string | null> {
-    // 1. Check Redis cache
-    const redisToken = await this.store.redis.get(RedisKeys.brokerToken());
-    if (redisToken) {
-      return redisToken;
+    // 1. Check in-memory cache
+    if (this.cachedToken && !this.isExpired()) {
+      return this.cachedToken;
     }
 
     // 2. Check environment variable (initial seed)
@@ -100,8 +101,9 @@ export class TokenService {
     if (dbRow) {
       const isValid = await this.validateToken(dbRow.token);
       if (isValid) {
-        // Re-cache in Redis
-        await this.cacheInRedis(dbRow.token, dbRow.expiresAt ?? undefined);
+        // Re-cache in memory
+        this.cachedToken = dbRow.token;
+        this.cachedTokenExpiry = dbRow.expiresAt;
         return dbRow.token;
       }
       // Token exists but is invalid/expired → try renewal
@@ -272,11 +274,12 @@ export class TokenService {
   }
 
   /**
-   * Force-clear all cached tokens (Redis + prevent re-use).
+   * Force-clear cached token (prevents re-use).
    * Useful when a 401 is received mid-session.
    */
   async invalidateToken(): Promise<void> {
-    await this.store.redis.del(RedisKeys.brokerToken());
+    this.cachedToken = null;
+    this.cachedTokenExpiry = null;
     console.log("TokenService: cached token invalidated");
   }
 
@@ -284,19 +287,20 @@ export class TokenService {
   /*  Internal helpers                                                   */
   /* ------------------------------------------------------------------ */
 
-  /** Persist token to both Redis (with TTL) and Postgres. */
-  private async persistToken(token: string, expiresAt?: Date): Promise<void> {
-    await this.cacheInRedis(token, expiresAt);
-    await this.saveToDb(token, expiresAt);
+  /** Check if in-memory cached token is expired. */
+  private isExpired(): boolean {
+    if (!this.cachedTokenExpiry) return false;
+    return this.cachedTokenExpiry.getTime() <= Date.now();
   }
 
-  /** Cache token in Redis with appropriate TTL. */
-  private async cacheInRedis(token: string, expiresAt?: Date): Promise<void> {
-    const ttl = expiresAt
-      ? Math.max(60, Math.floor((expiresAt.getTime() - Date.now()) / 1000))
-      : DEFAULT_TOKEN_TTL_SECONDS;
+  /** Persist token to both in-memory cache and Postgres. */
+  private async persistToken(token: string, expiresAt?: Date): Promise<void> {
+    // Cache in memory
+    this.cachedToken = token;
+    this.cachedTokenExpiry = expiresAt ?? null;
 
-    await this.store.redis.set(RedisKeys.brokerToken(), token, "EX", ttl);
+    // Save to Postgres
+    await this.saveToDb(token, expiresAt);
   }
 
   /** Save token + expiry to Postgres for durability and audit. */

@@ -24,7 +24,6 @@ export function loadConfig(): AppConfig {
       activeTradesUrl: env.ACTIVE_TRADES_URL,
       closedTradesUrl: env.CLOSED_TRADES_URL,
     },
-    redis: { url: env.REDIS_URL },
     postgres: {
       host: env.PG_HOST,
       port: Number(env.PG_PORT || 5432),
@@ -38,6 +37,7 @@ export function loadConfig(): AppConfig {
     },
     pollingIntervalMs: Number(env.POLLING_INTERVAL_MS || 15000),
     maxTradeCapital: Number(env.MAX_TRADE_CAPITAL || 10000),
+    perTradeCapital: Number(env.PER_TRADE_CAPITAL || 10000),
     maxActiveTrades: Number(env.MAX_ACTIVE_TRADES || 10),
     useSuperOrder: bool(env.USE_SUPER_ORDER, true),
     env: (env.NODE_ENV as any) || "development",

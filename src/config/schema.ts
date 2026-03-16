@@ -25,7 +25,6 @@ export const AppConfigSchema = z.object({
     activeTradesUrl: z.string().url(),
     closedTradesUrl: z.string().url(),
   }),
-  redis: z.object({ url: z.string().min(5) }),
   postgres: z.object({
     host: z.string().min(1),
     port: z.number().int().positive(),

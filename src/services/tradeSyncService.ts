@@ -1,7 +1,7 @@
 /*
  TradeSyncService: Polls Active and Closed APIs, reconciles transitions,
- enforces idempotency, and triggers Kite operations.
- Phase 1: Stub with method signatures.
+ enforces idempotency, and triggers Dhan operations.
+ All state is stored in Postgres (no Redis dependency).
 */
 
 import axios from "axios";
@@ -21,7 +21,6 @@ import { QuantityResolverService } from "./quantityResolverService";
 import { TSLService } from "./tslService";
 import { AuditLogService } from "./auditLogService";
 import { InstrumentLookupService } from "./instrumentLookupService";
-import { RedisKeys } from "../state/redisKeys";
 import { InstrumentType, LifecycleEvents } from "../enums/trade";
 
 export class TradeSyncService {
@@ -57,19 +56,14 @@ export class TradeSyncService {
       if (!(await this.isCashInstrument(at, audit))) continue;
 
       const id = at.id;
-      const gotLock = await store.redis.set(
-        RedisKeys.lockTrade(id),
-        "1",
-        "PX",
-        5000,
-        "NX",
-      );
-      if (!gotLock) continue;
 
       try {
-        // Idempotency guard
-        const buyGuard = await store.redis.get(RedisKeys.idempotencyBuy(id));
-        if (buyGuard) continue;
+        // Idempotency guard (Postgres-backed)
+        const idempRes = await store.pg.query(
+          `SELECT 1 FROM idempotency WHERE action_key = $1`,
+          [`buy:${id}`],
+        );
+        if (idempRes.rows.length > 0) continue;
 
         // Validate & resolve trade params (includes trade count + capital guards)
         const validated = await this.validateAndResolveTrade(
@@ -82,25 +76,16 @@ export class TradeSyncService {
         );
         if (!validated) continue;
 
-        // Place order (super or legacy)
+        // Place order
         const buyRes = await this.placeForeverEntry(dhan, validated);
 
-        // Persist state (idempotency, snapshot, audit)
-        await this.persistBuyState(store, audit, validated, buyRes);
-
-        // Legacy mode: place separate SL leg
-        if (!this.cfg.useSuperOrder) {
-          // Note: In Forever Order strategy, we skip placing a legacy SL here
-          // because we don't hold the stock yet. We execute the OCO SL
-          // when the entry triggers. We'll leave this empty or remove it.
-        }
+        // Persist state (idempotency, trade record, audit)
+        await this.persistBuyState(store, audit, validated, buyRes, at);
       } catch (err: any) {
-        await audit.record(LifecycleEvents.ERROR_OCCURRED, {
+        await audit.critical(LifecycleEvents.ERROR_OCCURRED, {
           id: at.id,
           error: String(err?.message || err),
         });
-      } finally {
-        await store.redis.del(RedisKeys.lockTrade(id));
       }
     }
   }
@@ -110,21 +95,15 @@ export class TradeSyncService {
   // │  monitorPendingEntries (runs on polling interval)           │
   // │                                                             │
   // │  1. GET /v2/forever/all  →  fetch all Dhan Forever Orders   │
-  // │  2. KEYS trade:*         →  scan Redis for local trades     │
-  // │  3. For each Redis trade where state = "AWAITING_ENTRY":    │
-  // │     └─ Match buyOrderId with Dhan orderId                   │
+  // │  2. SELECT trades WHERE state = 'AWAITING_ENTRY'            │
+  // │  3. For each pending trade:                                 │
+  // │     └─ Match buy_order_id with Dhan orderId                 │
   // │        ├─ TRADED     →  place OCO exit, update to ENTERED   │
   // │        ├─ CANCELLED  →  mark CLOSED                         │
   // │        ├─ REJECTED   →  mark CLOSED                         │
   // │        ├─ EXPIRED    →  mark CLOSED                         │
   // │        └─ PENDING    →  do nothing (check again next poll)  │
   // └─────────────────────────────────────────────────────────────┘
-
-  // Why these TTLs?
-  // 1 day for AWAITING_ENTRY — the entry Forever Order is pending. If it doesn't trigger within a day, Redis auto-cleans it. The scheduler will re-discover it from the active trades API if still valid.
-  // 30 days for ENTERED — we hold the stock now, need to track it for exit monitoring (OCO target/SL). Long TTL because positions can be held for weeks.
-  // 1 hour for CLOSED — just a grace period so other polling cycles don't re-process it. After 1 hour, the key self-deletes.
-
   async monitorPendingEntries(
     store: StateStore,
     dhan: DhanService,
@@ -135,20 +114,15 @@ export class TradeSyncService {
       const foreverOrders = await dhan.getForeverOrders();
       if (!Array.isArray(foreverOrders)) return;
 
-      // 2. We need to find local trades in AWAITING_ENTRY state
-      // (For this, we'll iterate through Redis keys that match trade:* and check state)
-      const keys = await store.redis.keys(RedisKeys.trade("*"));
-      for (const key of keys) {
-        const tradeDataStr = await store.redis.get(key);
-        if (!tradeDataStr) continue;
+      // 2. Query Postgres for trades in AWAITING_ENTRY state
+      const pendingRes = await store.pg.query(
+        `SELECT * FROM trades WHERE state = 'AWAITING_ENTRY' AND buy_order_id IS NOT NULL`,
+      );
 
-        const tradeData = JSON.parse(tradeDataStr);
-        if (tradeData.state !== "AWAITING_ENTRY" || !tradeData.buyOrderId)
-          continue;
-
+      for (const tradeRow of pendingRes.rows) {
         // 3. Find the corresponding Dhan order
         const dhanOrder = foreverOrders.find(
-          (o) => String(o.orderId) === String(tradeData.buyOrderId),
+          (o) => String(o.orderId) === String(tradeRow.buy_order_id),
         );
 
         if (!dhanOrder) continue;
@@ -159,72 +133,55 @@ export class TradeSyncService {
           const tradedPrice =
             typeof dhanOrder.price === "number"
               ? dhanOrder.price
-              : tradeData.entry_price;
+              : Number(tradeRow.entry_price);
 
-          // Fetch target & sl from local state (assuming we parse and store them, or re-fetch active trade.. wait, we need target/sl.
-          // Let's ensure target & sl Trigger are persisted in tradeData when we place the entry!)
-          const targetPrice = tradeData.target || tradedPrice * 1.05; // Fallback 5% if missing
-          const stopLossPrice = tradeData.slTrigger || tradedPrice * 0.95; // Fallback 5% if missing
+          const targetPrice = Number(tradeRow.target) || tradedPrice * 1.05;
+          const stopLossPrice =
+            Number(tradeRow.sl_trigger) || tradedPrice * 0.95;
 
           const exitReq: PlaceForeverOrderRequest = {
             dhanClientId: this.cfg.dhan.clientId,
-            correlationId: `exit_${tradeData.id}`.slice(0, 30),
+            correlationId: `exit_${tradeRow.id}`.slice(0, 30),
             orderFlag: "OCO",
             transactionType: "SELL",
             exchangeSegment: "NSE_EQ",
-            productType: "CNC", // Assuming CNC holding
+            productType: "CNC",
             orderType: "LIMIT",
             validity: "DAY",
-            securityId: tradeData.securityId,
-            quantity: tradeData.quantity,
+            securityId: tradeRow.security_id,
+            quantity: tradeRow.quantity,
             // Leg 1: Target
             price: targetPrice,
             triggerPrice: targetPrice,
             // Leg 2: Stop Loss
             price1: stopLossPrice,
             triggerPrice1: stopLossPrice,
-            quantity1: tradeData.quantity,
+            quantity1: tradeRow.quantity,
           };
 
           try {
-            // Let's ensure exitReq is using correct types by importing if necessary.
-            // (PlaceForeverOrderRequest is already imported)
             const exitRes = await dhan.placeForeverOrder(exitReq);
 
-            // Update local state to ENTERED and save the exit OCO Order ID
-            tradeData.state = "ENTERED";
-            tradeData.exitOrderId = exitRes.orderId;
-            tradeData.entry_price = tradedPrice;
+            // Update trade to ENTERED in Postgres
+            await store.pg.query(
+              `UPDATE trades
+               SET state = 'ENTERED',
+                   entered_at = NOW(),
+                   entry_price = $1,
+                   exit_order_id = $2
+               WHERE id = $3`,
+              [tradedPrice, exitRes.orderId, tradeRow.id],
+            );
 
-            await store.redis.set(
-              key,
-              JSON.stringify(tradeData),
-              "EX",
-              86400 * 30,
-            ); // Extend TTL if held
-
-            await audit.record(LifecycleEvents.BUY_PLACED, {
-              id: tradeData.id,
+            await audit.info(LifecycleEvents.BUY_PLACED, {
+              id: tradeRow.id,
               message: "Entry Forever Order TRADED. Attached OCO Exit.",
               entryPrice: tradedPrice,
               exitOrderId: exitRes.orderId,
             });
-
-            // Update Postgres trades table to ENTERED
-            try {
-              await store.pg.query(
-                `UPDATE trades SET state = 'ENTERED', entered_at = NOW() WHERE id = $1`,
-                [tradeData.id],
-              );
-            } catch (err: any) {
-              console.error(
-                `PG update failed for trade ${tradeData.id}:`,
-                err.message,
-              );
-            }
           } catch (err: any) {
-            await audit.record(LifecycleEvents.ERROR_OCCURRED, {
-              id: tradeData.id,
+            await audit.critical(LifecycleEvents.ERROR_OCCURRED, {
+              id: tradeRow.id,
               action: "Attach OCO Exception",
               error: err.message,
             });
@@ -235,24 +192,22 @@ export class TradeSyncService {
           dhanOrder.orderStatus === "EXPIRED"
         ) {
           // Entry failed or was cancelled by user directly on Dhan
-          tradeData.state = "CLOSED";
-          await store.redis.set(key, JSON.stringify(tradeData), "EX", 3600);
-          await audit.record(LifecycleEvents.ERROR_OCCURRED, {
-            id: tradeData.id,
+          await store.pg.query(
+            `UPDATE trades SET state = 'CANCELLED' WHERE id = $1`,
+            [tradeRow.id],
+          );
+          await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
+            id: tradeRow.id,
             action: "Entry Order Cancelled/Rejected",
+            orderStatus: dhanOrder.orderStatus,
           });
-
-          // Update Postgres table to CANCELLED
-          try {
-            await store.pg.query(
-              `UPDATE trades SET state = 'CANCELLED' WHERE id = $1`,
-              [tradeData.id],
-            );
-          } catch (err: any) {}
         }
       }
     } catch (err: any) {
-      console.error("monitorPendingEntries error:", err.message);
+      await audit.error(LifecycleEvents.ERROR_OCCURRED, {
+        action: "monitorPendingEntries",
+        error: err.message,
+      });
     }
   }
 
@@ -266,50 +221,41 @@ export class TradeSyncService {
       const closedTrades = await this.fetchClosedTrades();
       for (const ct of closedTrades) {
         // Check if this trade exists in our local tracker
-        const tradeKey = RedisKeys.trade(ct.id);
-        const tradeDataStr = await store.redis.get(tradeKey);
-        if (!tradeDataStr) continue;
+        const tradeRes = await store.pg.query(
+          `SELECT * FROM trades WHERE id = $1`,
+          [ct.id],
+        );
+        if (tradeRes.rows.length === 0) continue;
 
-        const tradeData = JSON.parse(tradeDataStr);
+        const tradeRow = tradeRes.rows[0];
 
         // If the trade is already closed locally, do nothing
         if (
-          tradeData.state === "CLOSED" ||
-          tradeData.state === "CLOSED_BY_ANALYST"
+          tradeRow.state === "CLOSED" ||
+          tradeRow.state === "CLOSED_BY_ANALYST"
         )
           continue;
 
         // Let's cancel whatever is pending and clear it out
-        if (tradeData.state === "AWAITING_ENTRY") {
+        if (tradeRow.state === "AWAITING_ENTRY") {
           try {
-            if (tradeData.buyOrderId) {
-              await dhan.cancelForeverOrder(tradeData.buyOrderId);
+            if (tradeRow.buy_order_id) {
+              await dhan.cancelForeverOrder(tradeRow.buy_order_id);
             }
-            tradeData.state = "CLOSED";
-            await store.redis.set(
-              tradeKey,
-              JSON.stringify(tradeData),
-              "EX",
-              3600,
+            await store.pg.query(
+              `UPDATE trades SET state = 'CLOSED' WHERE id = $1`,
+              [ct.id],
             );
-            await audit.record(LifecycleEvents.SKIP_TRADE, {
+            await audit.info(LifecycleEvents.SKIP_TRADE, {
               id: ct.id,
               message:
                 "Trade closed by analyst before entry executed. Cancelled pending Forever order.",
             });
-
-            // Update Postgres table to CANCELLED
-            try {
-              await store.pg.query(
-                `UPDATE trades SET state = 'CLOSED' WHERE id = $1`,
-                [ct.id],
-              );
-            } catch (err: any) {}
           } catch (err: any) {}
-        } else if (tradeData.state === "ENTERED") {
+        } else if (tradeRow.state === "ENTERED") {
           try {
-            if (tradeData.exitOrderId) {
-              await dhan.cancelForeverOrder(tradeData.exitOrderId);
+            if (tradeRow.exit_order_id) {
+              await dhan.cancelForeverOrder(tradeRow.exit_order_id);
             }
 
             // We possess the stock, fire an immediate Market SELL to liquidate at CMP
@@ -321,34 +267,24 @@ export class TradeSyncService {
               productType: "CNC",
               orderType: "MARKET",
               validity: "DAY",
-              securityId: tradeData.securityId,
-              quantity: tradeData.quantity,
+              securityId: tradeRow.security_id,
+              quantity: tradeRow.quantity,
             };
             await dhan.placeOrder(sellReq);
 
-            tradeData.state = "CLOSED_BY_ANALYST";
-            await store.redis.set(
-              tradeKey,
-              JSON.stringify(tradeData),
-              "EX",
-              3600,
+            const exitPrice = ct.cmp ?? Number(tradeRow.entry_price);
+            await store.pg.query(
+              `UPDATE trades SET state = 'CLOSED_BY_ANALYST', exited_at = NOW(), exit_price = $1 WHERE id = $2`,
+              [exitPrice, ct.id],
             );
-            await audit.record(LifecycleEvents.SELL_PLACED, {
+
+            await audit.info(LifecycleEvents.SELL_PLACED, {
               id: ct.id,
               message:
                 "Analyst officially closed the trade. Liquidated position at Market.",
             });
-
-            // Assuming market execution near CMP or entry price
-            try {
-              const exitPrice = ct.cmp ?? tradeData.entry_price; // approximate
-              await store.pg.query(
-                `UPDATE trades SET state = 'CLOSED_BY_ANALYST', exited_at = NOW(), exit_price = $1 WHERE id = $2`,
-                [exitPrice, ct.id],
-              );
-            } catch (err: any) {}
           } catch (err: any) {
-            await audit.record(LifecycleEvents.ERROR_OCCURRED, {
+            await audit.critical(LifecycleEvents.ERROR_OCCURRED, {
               id: ct.id,
               message: "Failed to liquidate closed trade",
               error: err.message,
@@ -357,7 +293,10 @@ export class TradeSyncService {
         }
       }
     } catch (err: any) {
-      console.error("processClosedTrades error:", err.message);
+      await audit.error(LifecycleEvents.ERROR_OCCURRED, {
+        action: "processClosedTrades",
+        error: err.message,
+      });
     }
   }
 
@@ -372,15 +311,11 @@ export class TradeSyncService {
     audit: AuditLogService,
   ): Promise<boolean> {
     if (at.instrument_type !== InstrumentType.CASH) {
-      await audit.record(
-        LifecycleEvents.SKIP_TRADE,
-        {
-          id: at.id,
-          reason: "Skipping non-cash instrument",
-          instrument_type: at.instrument_type,
-        },
-        false,
-      );
+      await audit.debug(LifecycleEvents.SKIP_TRADE, {
+        id: at.id,
+        reason: "Skipping non-cash instrument",
+        instrument_type: at.instrument_type,
+      });
       return false;
     }
     return true;
@@ -388,6 +323,7 @@ export class TradeSyncService {
 
   /**
    * Validate & resolve: securityId, entryPrice, qty, slTrigger, target.
+   * Includes max trade count and max capital guards.
    * Returns ValidatedTrade or null to skip.
    */
   private async validateAndResolveTrade(
@@ -410,7 +346,7 @@ export class TradeSyncService {
       );
       const activeCount = Number(countRes.rows?.[0]?.cnt ?? 0);
       if (activeCount >= this.cfg.maxActiveTrades) {
-        await audit.record(LifecycleEvents.SKIP_TRADE, {
+        await audit.warn(LifecycleEvents.SKIP_TRADE, {
           id,
           reason: "Max active trade limit reached",
           activeCount,
@@ -419,14 +355,17 @@ export class TradeSyncService {
         return null;
       }
     } catch (err: any) {
-      console.error("Error checking active trade count:", err.message);
-      // Fail-closed: skip trade if we can't verify the count
+      await audit.error(LifecycleEvents.ERROR_OCCURRED, {
+        id,
+        action: "Check active trade count",
+        error: err.message,
+      });
       return null;
     }
 
     // ── Resolve securityId from instrument_list_nse_eq ────────────────
     if (!symbol) {
-      await audit.record(LifecycleEvents.ERROR_OCCURRED, {
+      await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
         id,
         reason: "Missing sc_symbol — cannot resolve securityId",
       });
@@ -435,7 +374,7 @@ export class TradeSyncService {
 
     const securityId = await instrumentLookup.resolveSecurityId(symbol);
     if (!securityId) {
-      await audit.record(LifecycleEvents.ERROR_OCCURRED, {
+      await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
         id,
         reason: "No instrument found in instrument_list_nse_eq",
         symbol,
@@ -485,7 +424,7 @@ export class TradeSyncService {
       );
       const deployedCapital = Number(capRes.rows?.[0]?.deployed ?? 0);
       if (deployedCapital + newTradeCapital > this.cfg.maxTradeCapital) {
-        await audit.record(LifecycleEvents.SKIP_TRADE, {
+        await audit.warn(LifecycleEvents.SKIP_TRADE, {
           id,
           reason: "Max deployed capital would be exceeded",
           deployedCapital,
@@ -495,7 +434,11 @@ export class TradeSyncService {
         return null;
       }
     } catch (err: any) {
-      console.error("Error checking deployed capital:", err.message);
+      await audit.error(LifecycleEvents.ERROR_OCCURRED, {
+        id,
+        action: "Check deployed capital",
+        error: err.message,
+      });
       return null;
     }
 
@@ -526,8 +469,6 @@ export class TradeSyncService {
 
   /**
    * Place entry order: SINGLE Forever Order for entry breakout/limit conditions.
-   * If condition is already met (cmp in range), fall back to Market order immediately?
-   * For this implementation, we always set a Forever Order with triggerPrice.
    */
   private async placeForeverEntry(
     dhan: DhanService,
@@ -574,34 +515,50 @@ export class TradeSyncService {
   }
 
   /**
-   * Persist BUY state: set idempotency key, cache trade snapshot, record audit.
-   * Modifies state to AWAITING_ENTRY.
+   * Persist BUY state: set idempotency key, insert trade record, record audit.
+   * All state in Postgres — no Redis.
    */
   private async persistBuyState(
     store: StateStore,
     audit: AuditLogService,
     v: ValidatedTrade,
     buyRes: PlaceOrderResponse,
+    reco?: ActiveTrade,
   ): Promise<void> {
-    await store.redis.set(RedisKeys.idempotencyBuy(v.id), "1", "EX", 86400);
-
-    // Store as AWAITING_ENTRY initially. We'll poll Dhan on a timer to check if it traded.
-    await store.redis.set(
-      RedisKeys.trade(v.id),
-      JSON.stringify({
-        id: v.id,
-        securityId: v.securityId,
-        entry_price: v.entryPrice,
-        quantity: v.quantity,
-        state: "AWAITING_ENTRY",
-        buyOrderId: buyRes.orderId,
-        symbol: v.symbol,
-        target: v.target,
-        slTrigger: v.slTrigger,
-      }),
-      "EX",
-      86400,
+    // Set idempotency guard
+    await store.pg.query(
+      `INSERT INTO idempotency (action_key) VALUES ($1) ON CONFLICT DO NOTHING`,
+      [`buy:${v.id}`],
     );
+
+    // Upsert trade record with all fields
+    await store.pg.query(
+      `INSERT INTO trades (id, tradingsymbol, exchange, reco_type, entry_price, quantity, state,
+                           security_id, symbol, buy_order_id, target, sl_trigger, capital, reco)
+       VALUES ($1, $2, 'NSE', 'buy', $3, $4, 'AWAITING_ENTRY', $5, $6, $7, $8, $9, $10, $11)
+       ON CONFLICT (id) DO UPDATE SET
+         state = 'AWAITING_ENTRY',
+         buy_order_id = EXCLUDED.buy_order_id,
+         security_id = EXCLUDED.security_id,
+         target = EXCLUDED.target,
+         sl_trigger = EXCLUDED.sl_trigger,
+         capital = EXCLUDED.capital,
+         reco = EXCLUDED.reco`,
+      [
+        v.id,
+        v.symbol,
+        v.entryPrice,
+        v.quantity,
+        v.securityId,
+        v.symbol,
+        buyRes.orderId,
+        v.target ?? null,
+        v.slTrigger,
+        v.capital,
+        reco ? JSON.stringify(reco) : null,
+      ],
+    );
+
     await audit.record(LifecycleEvents.BUY_PLACED, {
       id: v.id,
       orderId: buyRes.orderId,
@@ -613,18 +570,6 @@ export class TradeSyncService {
       slTrigger: v.slTrigger,
       isForeverOrder: true,
     });
-
-    // Persist to Postgres `trades` table
-    try {
-      await store.pg.query(
-        `INSERT INTO trades (id, tradingsymbol, exchange, reco_type, entry_price, quantity, state)
-         VALUES ($1, $2, 'NSE', 'buy', $3, $4, 'AWAITING_ENTRY')
-         ON CONFLICT (id) DO NOTHING`,
-        [v.id, v.symbol, v.entryPrice, v.quantity],
-      );
-    } catch (err: any) {
-      console.error(`Failed to insert trade ${v.id} into pg:`, err.message);
-    }
   }
 
   // Normalize API payloads (Phase 1): parse strings -> numbers & parse meta_data

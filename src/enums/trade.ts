@@ -28,9 +28,18 @@ export enum LifecycleEvents {
   CLOSED_TRADE_SYNCED = "CLOSED_TRADE_SYNCED",
   ERROR_OCCURRED = "ERROR_OCCURRED",
   SKIP_TRADE = "SKIP_TRADE",
+  DHAN_API_CALL = "DHAN_API_CALL",
 }
 
 export enum InstrumentType {
   CASH = "cash",
   OPTIONS = "options",
+}
+
+export enum LogLevel {
+  DEBUG = 0,
+  INFO = 1,
+  WARN = 2,
+  ERROR = 3,
+  CRITICAL = 4,
 }
