@@ -1,0 +1,49 @@
+# Production Docker Compose — Oracle Cloud / any Linux server
+# Usage: docker compose -f docker-compose.prod.yml up -d --build
+#
+# Reads secrets from .env file in the same directory.
+# Postgres data is persisted in a named volume (survives container restarts).
+
+services:
+  stock_app:
+    build:
+      context: .
+      # Uses final 'runner' stage (production Node.js only, no devDeps)
+    container_name: stocks-executor-app
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PG_HOST: stock_postgres
+      PG_PORT: "5432"
+      PG_DATABASE: ${PG_DATABASE:-stocks_executor}
+      PG_USER: ${PG_USER:-postgres}
+      PG_PASSWORD: ${PG_PASSWORD:-postgres}
+    depends_on:
+      stock_postgres:
+        condition: service_healthy
+    restart: always
+
+  stock_postgres:
+    image: postgres:16-alpine
+    container_name: stocks-executor-postgres
+    environment:
+      POSTGRES_DB: ${PG_DATABASE:-stocks_executor}
+      POSTGRES_USER: ${PG_USER:-postgres}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-postgres}
+    # No external port exposure in production (only internal docker network)
+    # Uncomment the next line if you need direct access for debugging:
+    # ports:
+    #   - "7432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: always
+
+volumes:
+  postgres-data:
