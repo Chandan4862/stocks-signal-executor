@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import { TradeSyncService } from "../src/services/tradeSyncService";
+import { TradeEntryService } from "../src/services/tradeEntryService";
 import { QuantityResolverService } from "../src/services/quantityResolverService";
 import { TSLService } from "../src/services/tslService";
 import { AuditLogService } from "../src/services/auditLogService";
@@ -113,14 +114,27 @@ function createStore(
 // ─── TradeSyncStub ──────────────────────────────────────────────────────────
 class TradeSyncStub extends TradeSyncService {
   private fixtureOverride: any[];
+  private entryService: TradeEntryService;
 
   constructor(cfg: any, fixture: any[] = activeApiResponse) {
     super(cfg);
     this.fixtureOverride = fixture;
+    this.entryService = new TradeEntryService(cfg);
   }
 
   async fetchActiveTrades(): Promise<any[]> {
     return this.fixtureOverride.map((this as any).normalizeActive);
+  }
+
+  // Delegate to TradeEntryService — keeps all test call-sites unchanged
+  async runBuyAndInitialSl(
+    store: any, dhan: any, qtyResolver: any, tslService: any,
+    audit: any, instrumentLookup: any,
+  ): Promise<void> {
+    const actives = await this.fetchActiveTrades();
+    return this.entryService.runBuyAndInitialSl(
+      store, dhan, qtyResolver, tslService, audit, instrumentLookup, actives,
+    );
   }
 }
 
