@@ -44,14 +44,14 @@ export class Scheduler {
     if (this.monitorTimer) return;
 
     // 1. Run monitor tick immediately, then every hour
-    this.monitorTick().catch(() => {});
-    this.monitorTimer = setInterval(
-      () => this.monitorTick().catch(() => {}),
-      this.cfg.pollingIntervalMs, // default ~1 hour
-    );
+    // this.monitorTick().catch(() => {});
+    // this.monitorTimer = setInterval(
+    //   () => this.monitorTick().catch(() => {}),
+    //   this.cfg.pollingIntervalMs, // default ~1 hour
+    // );
 
     // 2. Schedule trade scan at 9:30 AM IST
-    this.scheduleTradeScan();
+    // this.scheduleTradeScan();
 
     console.log(
       `Scheduler started: monitor every ${this.cfg.pollingIntervalMs}ms, trade scan at 09:30 IST`,
@@ -95,8 +95,18 @@ export class Scheduler {
   private async executeTradeScan(): Promise<void> {
     await backoff(
       async () => {
-        const { store, audit, tokens, dhan, tradeSync, tradeEntry, tradeReconciliation, qtyResolver, tsl, instrumentLookup } =
-          await this.initServices();
+        const {
+          store,
+          audit,
+          tokens,
+          dhan,
+          tradeSync,
+          tradeEntry,
+          tradeReconciliation,
+          qtyResolver,
+          tsl,
+          instrumentLookup,
+        } = await this.initServices();
 
         try {
           const token = await tokens.getToken();
@@ -125,7 +135,12 @@ export class Scheduler {
 
           // Phase 4: Handle external closures from Closed API
           const closed = await tradeSync.fetchClosedTrades();
-          await tradeReconciliation.processClosedTrades(store, dhan, audit, closed);
+          await tradeReconciliation.processClosedTrades(
+            store,
+            dhan,
+            audit,
+            closed,
+          );
         } finally {
           await store.disconnect();
         }
@@ -169,7 +184,6 @@ export class Scheduler {
   //   → setTimeout(23.5 hours)
   //   → ⚠️ MISSED today's 9:30 scan
 
-
   private scheduleTradeScan(): void {
     const now = new Date();
 
@@ -196,7 +210,9 @@ export class Scheduler {
     }, msUntil);
 
     const hoursUntil = (msUntil / 3600000).toFixed(1);
-    console.log(`Trade scan scheduled in ${hoursUntil}h (${target.toLocaleString("en-IN")})`);
+    console.log(
+      `Trade scan scheduled in ${hoursUntil}h (${target.toLocaleString("en-IN")})`,
+    );
   }
 
   /* ------------------------------------------------------------------ */
@@ -206,8 +222,14 @@ export class Scheduler {
   private async monitorTick(): Promise<void> {
     await backoff(
       async () => {
-        const { store, audit, tokens, dhan, tradeMonitor, tradeReconciliation } =
-          await this.initServices();
+        const {
+          store,
+          audit,
+          tokens,
+          dhan,
+          tradeMonitor,
+          tradeReconciliation,
+        } = await this.initServices();
 
         try {
           const token = await tokens.getToken();
@@ -281,7 +303,19 @@ export class Scheduler {
 
     const instrumentLookup = new InstrumentLookupService(store.pg);
 
-    return { store, audit, tokens, dhan, tradeSync, tradeEntry, tradeMonitor, tradeReconciliation, qtyResolver, tsl, instrumentLookup };
+    return {
+      store,
+      audit,
+      tokens,
+      dhan,
+      tradeSync,
+      tradeEntry,
+      tradeMonitor,
+      tradeReconciliation,
+      qtyResolver,
+      tsl,
+      instrumentLookup,
+    };
   }
 
   private async notifyNoToken(audit: AuditLogService): Promise<void> {

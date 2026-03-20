@@ -8,7 +8,7 @@ import { PostbackService } from "./services/postbackService";
 
 async function main() {
   const config = loadConfig();
-  console.log("Stocks Signal Executor booting with config:", config);
+  // console.log("Stocks Signal Executor booting with config:", config);
 
   // --- Telegram bot ---
   const telegram = new TelegramService(
