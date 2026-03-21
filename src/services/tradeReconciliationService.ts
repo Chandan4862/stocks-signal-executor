@@ -275,6 +275,14 @@ export class TradeReconciliationService {
         );
 
         if (!holding || holding.totalQty === 0) {
+          // Skip trades entered today — CNC holdings only appear after T+1 settlement.
+          // Without this guard, a same-day entry (Phase 3) would be falsely closed here.
+          if (tradeRow.entered_at) {
+            const enteredDate = new Date(tradeRow.entered_at).toDateString();
+            const today = new Date().toDateString();
+            if (enteredDate === today) continue;
+          }
+
           await store.pg.query(
             `UPDATE trades SET state = 'CLOSED', exited_at = NOW() WHERE id = $1`,
             [tradeRow.id],
