@@ -49,7 +49,12 @@ export class TradeEntryService {
           [`buy:${id}`],
         );
         if (idempRes.rows.length > 0) {
-          await this.logRecoScan(store, at, "SKIPPED", "Already processed (idempotency)");
+          await this.logRecoScan(
+            store,
+            at,
+            "SKIPPED",
+            "Already processed (idempotency)",
+          );
           continue;
         }
 
@@ -73,7 +78,14 @@ export class TradeEntryService {
         // Persist state (idempotency, trade record, audit)
         await this.persistBuyState(store, audit, validated, buyRes, at);
 
-        await this.logRecoScan(store, at, "PLACED", null, validated.entryPrice, validated.quantity);
+        await this.logRecoScan(
+          store,
+          at,
+          "PLACED",
+          null,
+          validated.entryPrice,
+          validated.quantity,
+        );
       } catch (err: any) {
         const payload =
           err instanceof DhanApiError

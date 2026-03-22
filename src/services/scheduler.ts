@@ -127,8 +127,18 @@ export class Scheduler {
   private async executeTradeScan(): Promise<void> {
     await backoff(
       async () => {
-        const { store, audit, tokens, dhan, tradeSync, tradeEntry, tradeReconciliation, qtyResolver, tsl, instrumentLookup } =
-          await this.initServices();
+        const {
+          store,
+          audit,
+          tokens,
+          dhan,
+          tradeSync,
+          tradeEntry,
+          tradeReconciliation,
+          qtyResolver,
+          tsl,
+          instrumentLookup,
+        } = await this.initServices();
 
         try {
           const token = await tokens.getToken();
@@ -143,7 +153,7 @@ export class Scheduler {
             timestamp: new Date().toISOString(),
           });
 
-          // Phase 2: Actives — scan and place Forever Orders
+          // // Phase 2: Actives — scan and place Forever Orders
           const actives = await tradeSync.fetchActiveTrades();
           await tradeEntry.runBuyAndInitialSl(
             store,
@@ -157,7 +167,13 @@ export class Scheduler {
 
           // Phase 4: Handle external closures from Closed API
           const closed = await tradeSync.fetchClosedTrades();
-          await tradeReconciliation.processClosedTrades(store, dhan, audit, closed);
+
+          await tradeReconciliation.processClosedTrades(
+            store,
+            dhan,
+            audit,
+            closed,
+          );
         } finally {
           await store.disconnect();
         }
@@ -231,10 +247,13 @@ export class Scheduler {
   /* ------------------------------------------------------------------ */
 
   private scheduleReconciliation(): void {
-    this.reconcileTimer = this.scheduleAtIST(Scheduler.RECONCILE_TIME, async () => {
-      await this.executeReconciliation().catch(() => {});
-      this.scheduleReconciliation(); // re-schedule for next day
-    });
+    this.reconcileTimer = this.scheduleAtIST(
+      Scheduler.RECONCILE_TIME,
+      async () => {
+        await this.executeReconciliation().catch(() => {});
+        this.scheduleReconciliation(); // re-schedule for next day
+      },
+    );
     this.logSchedule("Reconciliation", Scheduler.RECONCILE_TIME);
   }
 
@@ -276,7 +295,10 @@ export class Scheduler {
    * If the time has already passed today, schedules for tomorrow.
    * Skips weekends (Saturday=6, Sunday=0).
    */
-  private scheduleAtIST(time: string, callback: () => Promise<void>): NodeJS.Timeout {
+  private scheduleAtIST(
+    time: string,
+    callback: () => Promise<void>,
+  ): NodeJS.Timeout {
     const [hours, mins] = time.split(":").map(Number);
     const now = new Date();
 
@@ -308,8 +330,12 @@ export class Scheduler {
     const target = new Date(now);
     target.setHours(hours, mins, 0, 0);
     if (now >= target) target.setDate(target.getDate() + 1);
-    const hoursUntil = ((target.getTime() - now.getTime()) / 3600000).toFixed(1);
-    console.log(`  ${label} scheduled in ${hoursUntil}h (${target.toLocaleString("en-IN")})`);
+    const hoursUntil = ((target.getTime() - now.getTime()) / 3600000).toFixed(
+      1,
+    );
+    console.log(
+      `  ${label} scheduled in ${hoursUntil}h (${target.toLocaleString("en-IN")})`,
+    );
   }
 
   /* ------------------------------------------------------------------ */
@@ -355,7 +381,19 @@ export class Scheduler {
 
     const instrumentLookup = new InstrumentLookupService(store.pg);
 
-    return { store, audit, tokens, dhan, tradeSync, tradeEntry, tradeMonitor, tradeReconciliation, qtyResolver, tsl, instrumentLookup };
+    return {
+      store,
+      audit,
+      tokens,
+      dhan,
+      tradeSync,
+      tradeEntry,
+      tradeMonitor,
+      tradeReconciliation,
+      qtyResolver,
+      tsl,
+      instrumentLookup,
+    };
   }
 
   private async notifyNoToken(audit: AuditLogService): Promise<void> {
