@@ -1,14 +1,16 @@
 /*
-  Scheduler: Two-cadence execution model.
+  Scheduler: Three-cadence execution model.
 
-  Fast loop (1 hour):
-    - Phase 3: monitorPendingEntries  (Dhan order status)
-    - Phase 5: monitorEnteredTrades   (exit order status)
-    - Phase 6: reconcilePositions     (safety net)
-
-  Slow trigger (9:30 AM + /trade command):
+  Trade scan (9:30 AM IST + /trade command):
     - Phase 2: runBuyAndInitialSl     (analyst active trades)
     - Phase 4: processClosedTrades    (analyst closed trades)
+
+  Monitor (4x/day — 10:30, 12:00, 13:30, 15:00 IST):
+    - Phase 3: monitorPendingEntries  (Dhan order status)
+    - Phase 5: monitorEnteredTrades   (exit order status)
+
+  Reconcile (once/day — 16:00 IST, after market close):
+    - Phase 6: reconcilePositions     (safety net)
 */
 
 import type { AppConfig } from "../config/schema";
@@ -28,8 +30,14 @@ import { TelegramService } from "./telegramService";
 import { LifecycleEvents } from "../enums/trade";
 
 export class Scheduler {
-  private monitorTimer: NodeJS.Timeout | null = null;
   private tradeScanTimer: NodeJS.Timeout | null = null;
+  private monitorTimers: NodeJS.Timeout[] = [];
+  private reconcileTimer: NodeJS.Timeout | null = null;
+
+  // 4x/day during market hours (IST: HH:MM)
+  private static readonly MONITOR_TIMES = ["10:30", "12:00", "13:30", "15:00"];
+  // Once after market close
+  private static readonly RECONCILE_TIME = "16:00";
 
   constructor(
     private cfg: AppConfig,
@@ -41,43 +49,41 @@ export class Scheduler {
   /* ------------------------------------------------------------------ */
 
   start() {
-    if (this.monitorTimer) return;
+    if (this.tradeScanTimer) return;
 
-    // 1. Run monitor tick immediately, then every hour
-    this.monitorTick().catch(() => {});
-    this.monitorTimer = setInterval(
-      () => this.monitorTick().catch(() => {}),
-      this.cfg.pollingIntervalMs, // default ~1 hour
-    );
-
-    // 2. Schedule trade scan at 9:30 AM IST
+    // 1. Schedule trade scan at 9:30 AM IST
     this.scheduleTradeScan();
 
+    // 2. Schedule monitor ticks (Phases 3+5) 4x/day during market hours
+    this.scheduleMonitorTicks();
+
+    // 3. Schedule reconciliation (Phase 6) once after market close
+    this.scheduleReconciliation();
+
     console.log(
-      `Scheduler started: monitor every ${this.cfg.pollingIntervalMs}ms, trade scan at 09:30 IST`,
+      `Scheduler started:\n` +
+        `  Trade scan: 09:30 IST\n` +
+        `  Monitor:    ${Scheduler.MONITOR_TIMES.join(", ")} IST\n` +
+        `  Reconcile:  ${Scheduler.RECONCILE_TIME} IST`,
     );
   }
 
   stop() {
-    if (this.monitorTimer) {
-      clearInterval(this.monitorTimer);
-      this.monitorTimer = null;
-    }
     if (this.tradeScanTimer) {
       clearTimeout(this.tradeScanTimer);
       this.tradeScanTimer = null;
+    }
+    for (const t of this.monitorTimers) clearTimeout(t);
+    this.monitorTimers = [];
+    if (this.reconcileTimer) {
+      clearTimeout(this.reconcileTimer);
+      this.reconcileTimer = null;
     }
   }
 
   /* ------------------------------------------------------------------ */
   /*  Trade Scan — Phases 2+4 (analyst API, runs at 9:30 AM + /trade)   */
   /* ------------------------------------------------------------------ */
-
-  // Scheduler.monitorTick()
-  //   └→ Phases 3,5,6 — Dhan order monitoring (hourly)
-
-  // Scheduler.runTradeScan()
-  //   └→ Phases 2,4 — Analyst API scan (9:30 AM + /trade command)
 
   /**
    * Public: trigger trade scan manually (called by Telegram /trade command).
@@ -135,78 +141,37 @@ export class Scheduler {
   }
 
   /** Schedule next 9:30 AM IST run. Re-schedules itself daily. */
-  //   Boot at 20:34 IST (Monday)
-  //   → scheduleTradeScan()
-  //   → target = Tomorrow 09:30 IST (Tuesday)
-  //   → setTimeout(13h)
-
-  // Tuesday 09:30 IST
-  //   → Timer fires
-  //   → day = 2 (Tuesday) → not weekend → executeTradeScan() ✅
-  //   → scheduleTradeScan() again
-  //   → target = Wednesday 09:30 IST
-  //   → setTimeout(24h)
-
-  // Saturday 09:30 IST
-  //   → Timer fires
-  //   → day = 6 (Saturday) → weekend → SKIP ❌
-  //   → scheduleTradeScan() again
-  //   → target = Sunday 09:30 IST (will also skip)
-  /**********************************************/
-  //   Server stops at 22:00 (Monday)
-  //   → setTimeout for Tuesday 09:30 is gone ❌
-
-  // Server restarts at 08:00 (Tuesday)
-  //   → scheduler.start() called
-  //   → scheduleTradeScan() runs
-  //   → now = 08:00, target = TODAY 09:30 (not past yet)
-  //   → setTimeout(1.5 hours) ✅ — catches it!
-
-  // Server restarts at 10:00 (Tuesday)
-  //   → scheduleTradeScan() runs
-  //   → now = 10:00, target = 09:30 (already past)
-  //   → target pushed to TOMORROW 09:30
-  //   → setTimeout(23.5 hours)
-  //   → ⚠️ MISSED today's 9:30 scan
-
-
   private scheduleTradeScan(): void {
-    const now = new Date();
-
-    // Target 9:30 AM IST today
-    const target = new Date(now);
-    target.setHours(9, 30, 0, 0);
-
-    // If already past 9:30, schedule for tomorrow
-    if (now >= target) {
-      target.setDate(target.getDate() + 1);
-    }
-
-    const msUntil = target.getTime() - now.getTime();
-
-    this.tradeScanTimer = setTimeout(async () => {
-      // Skip weekends (Saturday=6, Sunday=0)
-      const day = new Date().getDay();
-      if (day !== 0 && day !== 6) {
-        await this.executeTradeScan().catch(() => {});
-      }
-
-      // Re-schedule for next day
-      this.scheduleTradeScan();
-    }, msUntil);
-
-    const hoursUntil = (msUntil / 3600000).toFixed(1);
-    console.log(`Trade scan scheduled in ${hoursUntil}h (${target.toLocaleString("en-IN")})`);
+    this.tradeScanTimer = this.scheduleAtIST("09:30", async () => {
+      await this.executeTradeScan().catch(() => {});
+      this.scheduleTradeScan(); // re-schedule for next day
+    });
+    this.logSchedule("Trade scan", "09:30");
   }
 
   /* ------------------------------------------------------------------ */
-  /*  Monitor Tick — Phases 3,5,6 (Dhan monitoring, runs hourly)        */
+  /*  Monitor — Phases 3+5 (4x/day during market hours)                 */
   /* ------------------------------------------------------------------ */
 
-  private async monitorTick(): Promise<void> {
+  private scheduleMonitorTicks(): void {
+    for (const t of this.monitorTimers) clearTimeout(t);
+    this.monitorTimers = [];
+
+    for (const time of Scheduler.MONITOR_TIMES) {
+      const timer = this.scheduleAtIST(time, async () => {
+        await this.executeMonitorTick().catch(() => {});
+        // Re-schedule all after the last one fires
+        this.scheduleMonitorTicks();
+      });
+      this.monitorTimers.push(timer);
+      this.logSchedule("Monitor tick", time);
+    }
+  }
+
+  private async executeMonitorTick(): Promise<void> {
     await backoff(
       async () => {
-        const { store, audit, tokens, dhan, tradeMonitor, tradeReconciliation } =
+        const { store, audit, tokens, dhan, tradeMonitor } =
           await this.initServices();
 
         try {
@@ -227,6 +192,44 @@ export class Scheduler {
 
           // Phase 5: Monitor ENTERED trades — detect SL/target hits, manual exits
           await tradeMonitor.monitorEnteredTrades(store, dhan, audit);
+        } finally {
+          await store.disconnect();
+        }
+      },
+      { retries: 3, baseMs: 250 },
+    );
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Reconcile — Phase 6 (once/day after market close, 16:00 IST)      */
+  /* ------------------------------------------------------------------ */
+
+  private scheduleReconciliation(): void {
+    this.reconcileTimer = this.scheduleAtIST(Scheduler.RECONCILE_TIME, async () => {
+      await this.executeReconciliation().catch(() => {});
+      this.scheduleReconciliation(); // re-schedule for next day
+    });
+    this.logSchedule("Reconciliation", Scheduler.RECONCILE_TIME);
+  }
+
+  private async executeReconciliation(): Promise<void> {
+    await backoff(
+      async () => {
+        const { store, audit, tokens, dhan, tradeReconciliation } =
+          await this.initServices();
+
+        try {
+          const token = await tokens.getToken();
+          if (!token) {
+            await this.notifyNoToken(audit);
+            return;
+          }
+
+          await audit.info(LifecycleEvents.DHAN_API_CALL, {
+            action: "Scheduler.reconciliation",
+            message: "Post-market reconciliation started",
+            timestamp: new Date().toISOString(),
+          });
 
           // Phase 6: Reconcile Dhan positions with local trades table
           await tradeReconciliation.reconcilePositions(store, dhan, audit);
@@ -236,6 +239,51 @@ export class Scheduler {
       },
       { retries: 3, baseMs: 250 },
     );
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Scheduling helpers                                                 */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Schedule a callback at a specific IST time (HH:MM).
+   * If the time has already passed today, schedules for tomorrow.
+   * Skips weekends (Saturday=6, Sunday=0).
+   */
+  private scheduleAtIST(time: string, callback: () => Promise<void>): NodeJS.Timeout {
+    const [hours, mins] = time.split(":").map(Number);
+    const now = new Date();
+
+    const target = new Date(now);
+    target.setHours(hours, mins, 0, 0);
+
+    // If already past this time today, schedule for tomorrow
+    if (now >= target) {
+      target.setDate(target.getDate() + 1);
+    }
+
+    const msUntil = target.getTime() - now.getTime();
+
+    return setTimeout(async () => {
+      // Skip weekends
+      const day = new Date().getDay();
+      if (day !== 0 && day !== 6) {
+        await callback();
+      } else {
+        // Still re-schedule on weekends so Monday fires
+        await callback(); // callback handles re-scheduling
+      }
+    }, msUntil);
+  }
+
+  private logSchedule(label: string, time: string): void {
+    const [hours, mins] = time.split(":").map(Number);
+    const now = new Date();
+    const target = new Date(now);
+    target.setHours(hours, mins, 0, 0);
+    if (now >= target) target.setDate(target.getDate() + 1);
+    const hoursUntil = ((target.getTime() - now.getTime()) / 3600000).toFixed(1);
+    console.log(`  ${label} scheduled in ${hoursUntil}h (${target.toLocaleString("en-IN")})`);
   }
 
   /* ------------------------------------------------------------------ */
