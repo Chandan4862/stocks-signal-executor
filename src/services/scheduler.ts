@@ -17,6 +17,9 @@ import { StateStore } from "./stateStore";
 import { DhanService } from "./dhanService";
 import { TokenService } from "./tokenService";
 import { TradeSyncService } from "./tradeSyncService";
+import { TradeEntryService } from "./tradeEntryService";
+import { TradeMonitorService } from "./tradeMonitorService";
+import { TradeReconciliationService } from "./tradeReconciliationService";
 import { QuantityResolverService } from "./quantityResolverService";
 import { TSLService } from "./tslService";
 import { AuditLogService } from "./auditLogService";
@@ -92,7 +95,7 @@ export class Scheduler {
   private async executeTradeScan(): Promise<void> {
     await backoff(
       async () => {
-        const { store, audit, tokens, dhan, tradeSync, qtyResolver, tsl, instrumentLookup } =
+        const { store, audit, tokens, dhan, tradeSync, tradeEntry, tradeReconciliation, qtyResolver, tsl, instrumentLookup } =
           await this.initServices();
 
         try {
@@ -109,17 +112,20 @@ export class Scheduler {
           });
 
           // Phase 2: Actives — scan and place Forever Orders
-          await tradeSync.runBuyAndInitialSl(
+          const actives = await tradeSync.fetchActiveTrades();
+          await tradeEntry.runBuyAndInitialSl(
             store,
             dhan,
             qtyResolver,
             tsl,
             audit,
             instrumentLookup,
+            actives,
           );
 
           // Phase 4: Handle external closures from Closed API
-          await tradeSync.processClosedTrades(store, dhan, audit);
+          const closed = await tradeSync.fetchClosedTrades();
+          await tradeReconciliation.processClosedTrades(store, dhan, audit, closed);
         } finally {
           await store.disconnect();
         }
@@ -200,7 +206,7 @@ export class Scheduler {
   private async monitorTick(): Promise<void> {
     await backoff(
       async () => {
-        const { store, audit, tokens, dhan, tradeSync } =
+        const { store, audit, tokens, dhan, tradeMonitor, tradeReconciliation } =
           await this.initServices();
 
         try {
@@ -217,13 +223,13 @@ export class Scheduler {
           });
 
           // Phase 3: Monitor pending Forever Orders — attach OCO if TRADED
-          await tradeSync.monitorPendingEntries(store, dhan, audit);
+          await tradeMonitor.monitorPendingEntries(store, dhan, audit);
 
           // Phase 5: Monitor ENTERED trades — detect SL/target hits, manual exits
-          await tradeSync.monitorEnteredTrades(store, dhan, audit);
+          await tradeMonitor.monitorEnteredTrades(store, dhan, audit);
 
           // Phase 6: Reconcile Dhan positions with local trades table
-          await tradeSync.reconcilePositions(store, dhan, audit);
+          await tradeReconciliation.reconcilePositions(store, dhan, audit);
         } finally {
           await store.disconnect();
         }
@@ -239,6 +245,9 @@ export class Scheduler {
   private async initServices() {
     const store = new StateStore(this.cfg);
     const tradeSync = new TradeSyncService(this.cfg);
+    const tradeEntry = new TradeEntryService(this.cfg);
+    const tradeMonitor = new TradeMonitorService(this.cfg);
+    const tradeReconciliation = new TradeReconciliationService(this.cfg);
     const qtyResolver = new QuantityResolverService();
     const tsl = new TSLService({
       incrementRs: this.cfg.tsl.incrementRs,
@@ -272,7 +281,7 @@ export class Scheduler {
 
     const instrumentLookup = new InstrumentLookupService(store.pg);
 
-    return { store, audit, tokens, dhan, tradeSync, qtyResolver, tsl, instrumentLookup };
+    return { store, audit, tokens, dhan, tradeSync, tradeEntry, tradeMonitor, tradeReconciliation, qtyResolver, tsl, instrumentLookup };
   }
 
   private async notifyNoToken(audit: AuditLogService): Promise<void> {

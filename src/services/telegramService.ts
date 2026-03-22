@@ -132,6 +132,12 @@ export class TelegramService {
   /* ------------------------------------------------------------------ */
 
   private registerHandlers(): void {
+    // Auth middleware — silently drop messages from unauthorized chats
+    this.bot.use((ctx, next) => {
+      if (!this.isAuthorized(ctx)) return;
+      return next();
+    });
+
     // /start — welcome
     this.bot.start((ctx) => {
       ctx.reply(
@@ -295,17 +301,20 @@ export class TelegramService {
       }
     });
 
-    // --- Health-check echo: "Hello" → "World 🌍" ---
-    this.bot.hears(/^hello$/i, (ctx) => {
-      ctx.reply("World 🌍");
-    });
+    // Silently ignore all unrecognised messages — no reply to unauthorized users
+  }
 
-    // Catch-all for unrecognised text
-    this.bot.on("text", (ctx) => {
-      ctx.reply(
-        "🤷 Unknown command. Try /start, /status, /trade, /token, or /renew.",
-      );
-    });
+  /* ------------------------------------------------------------------ */
+  /*  Authorization                                                      */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Only accept commands from the configured default chat (group/private).
+   * Silently ignores all other chats — bot never reveals its capabilities
+   * to unauthorized users.
+   */
+  private isAuthorized(ctx: any): boolean {
+    return String(ctx.chat?.id) === this.tradesChatId;
   }
 
   /* ------------------------------------------------------------------ */

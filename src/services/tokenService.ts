@@ -96,28 +96,6 @@ export class TokenService {
       return this.cachedToken;
     }
 
-    // 2. Check environment variable (initial seed)
-    const envToken = process.env.DHAN_ACCESS_TOKEN;
-    if (envToken) {
-      this.audit
-        .info(LifecycleEvents.TOKEN_REFRESHED, {
-          action: "getToken",
-          message: "Using DHAN_ACCESS_TOKEN from environment",
-        })
-        .catch(() => {});
-      const isValid = await this.validateToken(envToken);
-      if (isValid) {
-        await this.persistToken(envToken);
-        return envToken;
-      }
-      this.audit
-        .warn(LifecycleEvents.ERROR_OCCURRED, {
-          action: "getToken",
-          error: "Environment token is invalid/expired",
-        })
-        .catch(() => {});
-    }
-
     // 3. Check Postgres (durable fallback)
     const dbRow = await this.loadFromDb();
     if (dbRow) {

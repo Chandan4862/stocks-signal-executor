@@ -6,20 +6,23 @@
   "description": "Automated trading execution bot integrating Zerodha Kite, Active/Closed Trades APIs, and Telegram notifications.",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "NODE_ENV=development ts-node src/index.ts",
+    "dev": "NODE_ENV=production ts-node src/index.ts",
     "dev:watch": "NODE_ENV=development nodemon",
     "build": "tsc -p tsconfig.json",
     "start": "NODE_ENV=production node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run",
+    "migrate:up": "node-pg-migrate up --migration-file-language sql --migrations-dir db/migrations",
+    "migrate:down": "node-pg-migrate down --migration-file-language sql --migrations-dir db/migrations",
+    "migrate:create": "node-pg-migrate create --migration-file-language sql --migrations-dir db/migrations",
     "script:fetch-instruments": "ts-node src/scripts/fetchInstruments.ts"
   },
   "dependencies": {
     "axios": "^1.6.8",
     "dayjs": "^1.11.10",
     "dotenv": "^16.4.1",
-    "ioredis": "^5.3.2",
+    "node-pg-migrate": "^8.0.4",
     "pg": "^8.11.3",
     "telegraf": "^4.16.3",
     "zod": "^3.23.8"
@@ -27,7 +30,6 @@
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/pg": "^8.16.0",
-    "ioredis-mock": "^8.10.1",
     "nock": "^13.5.2",
     "nodemon": "^3.0.1",
     "ts-node": "^10.9.2",

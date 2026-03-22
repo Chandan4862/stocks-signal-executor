@@ -546,4 +546,17 @@ export class DhanService {
       return data;
     });
   }
+
+  /**
+   * Fetch all holdings (portfolio).
+   * Used for reconciliation — holdings show actual stock ownership.
+   * Key fields: securityId, tradingSymbol, totalQty, availableQty, avgCostPrice
+   */
+  async getHoldings(): Promise<any[]> {
+    return this.withAuthRetry(async (http) => {
+      const { data } = await http.get("/holdings");
+      if (!Array.isArray(data)) return [];
+      return data;
+    });
+  }
 }

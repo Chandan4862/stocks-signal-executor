@@ -5,34 +5,32 @@
 version: "3.9"
 
 services:
-  app:
+  stock_app:
     # Use builder stage so dev dependencies (ts-node/nodemon) are available
     build:
       context: .
       target: builder
     container_name: stocks-executor-app
     env_file:
-      - .env.docker
+      - .env
     environment:
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       PG_HOST: ${PG_HOST:-postgres}
       PG_PORT: ${PG_PORT:-7432}
       PG_DATABASE: ${PG_DATABASE:-stocks_executor}
       PG_USER: ${PG_USER:-postgres}
       PG_PASSWORD: ${PG_PASSWORD:-postgres}
       POLLING_INTERVAL_MS: ${POLLING_INTERVAL_MS:-15000}
+      DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASSWORD:-postgres}@${PG_HOST:-postgres}:5432/${PG_DATABASE:-stocks_executor}
     volumes:
       - .:/app
       - node_modules:/app/node_modules
-    command: ["sh", "-lc", "[ -d node_modules ] || npm ci; npm run dev:watch"]
+    command: ["sh", "-lc", "[ -d node_modules ] || npm ci; npm run migrate:up && npm run dev:watch"]
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
+      stock_postgres:
         condition: service_healthy
     restart: unless-stopped
 
-  postgres:
+  stock_postgres:
     image: postgres:16-alpine
     container_name: stocks-executor-postgres
     environment:
@@ -43,7 +41,6 @@ services:
       - "${PG_PORT:-7432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
