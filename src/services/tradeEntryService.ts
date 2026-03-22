@@ -35,7 +35,10 @@ export class TradeEntryService {
   ): Promise<void> {
     for (const at of actives) {
       // Only process cash instruments
-      if (!(await this.isCashInstrument(at, audit))) continue;
+      if (!(await this.isCashInstrument(at, audit))) {
+        await this.logRecoScan(store, at, "SKIPPED", "Non-cash instrument");
+        continue;
+      }
 
       const id = at.id;
 
@@ -45,7 +48,10 @@ export class TradeEntryService {
           `SELECT 1 FROM idempotency WHERE action_key = $1`,
           [`buy:${id}`],
         );
-        if (idempRes.rows.length > 0) continue;
+        if (idempRes.rows.length > 0) {
+          await this.logRecoScan(store, at, "SKIPPED", "Already processed (idempotency)");
+          continue;
+        }
 
         // Validate & resolve trade params (includes trade count + capital guards)
         const validated = await this.validateAndResolveTrade(
@@ -56,19 +62,25 @@ export class TradeEntryService {
           audit,
           instrumentLookup,
         );
-        if (!validated) continue;
+        if (!validated) {
+          await this.logRecoScan(store, at, "SKIPPED", "Validation failed");
+          continue;
+        }
 
         // Place order
         const buyRes = await this.placeForeverEntry(dhan, validated);
 
         // Persist state (idempotency, trade record, audit)
         await this.persistBuyState(store, audit, validated, buyRes, at);
+
+        await this.logRecoScan(store, at, "PLACED", null, validated.entryPrice, validated.quantity);
       } catch (err: any) {
         const payload =
           err instanceof DhanApiError
             ? { id: at.id, ...err.toAuditPayload() }
             : { id: at.id, error: String(err?.message || err) };
         await audit.critical(LifecycleEvents.ERROR_OCCURRED, payload);
+        await this.logRecoScan(store, at, "ERROR", err?.message ?? String(err));
       }
     }
   }
@@ -307,7 +319,7 @@ export class TradeEntryService {
     // Upsert trade record with all fields
     await store.pg.query(
       `INSERT INTO trades (id, tradingsymbol, exchange, reco_type, entry_price, quantity, state,
-                           security_id, symbol, buy_order_id, target, sl_trigger, capital, reco)
+                           security_id, symbol, buy_order_id, target, sl_trigger, capital, reco_id)
        VALUES ($1, $2, 'NSE', 'buy', $3, $4, 'AWAITING_ENTRY', $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT (id) DO UPDATE SET
          state = 'AWAITING_ENTRY',
@@ -316,7 +328,7 @@ export class TradeEntryService {
          target = EXCLUDED.target,
          sl_trigger = EXCLUDED.sl_trigger,
          capital = EXCLUDED.capital,
-         reco = EXCLUDED.reco`,
+         reco_id = EXCLUDED.reco_id`,
       [
         v.id,
         v.symbol,
@@ -328,7 +340,7 @@ export class TradeEntryService {
         v.target ?? null,
         v.slTrigger,
         v.capital,
-        reco ? JSON.stringify(reco) : null,
+        reco?.id ?? null,
       ],
     );
 
@@ -351,5 +363,43 @@ export class TradeEntryService {
         `Target: ₹${v.target ?? "—"} | SL: ₹${v.slTrigger}\n` +
         `Order: ${buyRes.orderId} (${buyRes.orderStatus})`,
     );
+  }
+
+  /**
+   * Log every reco encountered during a scan into reco_scan_log.
+   * Records outcome (PLACED | SKIPPED | ERROR) with optional skip reason.
+   */
+  private async logRecoScan(
+    store: StateStore,
+    at: ActiveTrade,
+    outcome: "PLACED" | "SKIPPED" | "ERROR",
+    skipReason: string | null,
+    entryPrice?: number,
+    quantity?: number,
+  ): Promise<void> {
+    try {
+      await store.pg.query(
+        `INSERT INTO reco_scan_log (reco_id, symbol, outcome, skip_reason, entry_price, quantity, reco)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (reco_id) DO UPDATE SET
+           outcome = EXCLUDED.outcome,
+           skip_reason = EXCLUDED.skip_reason,
+           entry_price = COALESCE(EXCLUDED.entry_price, reco_scan_log.entry_price),
+           quantity = COALESCE(EXCLUDED.quantity, reco_scan_log.quantity),
+           reco = EXCLUDED.reco,
+           scanned_at = NOW()`,
+        [
+          at.id,
+          String(at.sc_symbol || "").toUpperCase() || null,
+          outcome,
+          skipReason,
+          entryPrice ?? null,
+          quantity ?? null,
+          JSON.stringify(at),
+        ],
+      );
+    } catch {
+      // Never let scan logging break the main flow
+    }
   }
 }
