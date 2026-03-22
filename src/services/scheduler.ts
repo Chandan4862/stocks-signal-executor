@@ -98,6 +98,32 @@ export class Scheduler {
     }
   }
 
+  /**
+   * Public: trigger monitor manually (called by Telegram /monitor command).
+   * Runs Phases 3 + 5 (pending entries + entered trades).
+   */
+  async runMonitor(): Promise<string> {
+    try {
+      await this.executeMonitorTick();
+      return "✅ Monitor tick completed successfully.";
+    } catch (err: any) {
+      return `❌ Monitor failed: ${err?.message ?? "unknown error"}`;
+    }
+  }
+
+  /**
+   * Public: trigger reconciliation manually (called by Telegram /reconcile command).
+   * Runs Phase 6 (holdings reconciliation).
+   */
+  async runReconciliation(): Promise<string> {
+    try {
+      await this.executeReconciliation();
+      return "✅ Reconciliation completed successfully.";
+    } catch (err: any) {
+      return `❌ Reconciliation failed: ${err?.message ?? "unknown error"}`;
+    }
+  }
+
   private async executeTradeScan(): Promise<void> {
     await backoff(
       async () => {
