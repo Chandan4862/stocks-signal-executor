@@ -14,17 +14,22 @@ services:
     env_file:
       - .env
     environment:
-      PG_HOST: ${PG_HOST:-postgres}
-      PG_PORT: ${PG_PORT:-7432}
+      PG_HOST: stock_postgres
+      PG_PORT: 5432
       PG_DATABASE: ${PG_DATABASE:-stocks_executor}
       PG_USER: ${PG_USER:-postgres}
       PG_PASSWORD: ${PG_PASSWORD:-postgres}
       POLLING_INTERVAL_MS: ${POLLING_INTERVAL_MS:-15000}
-      DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASSWORD:-postgres}@${PG_HOST:-postgres}:5432/${PG_DATABASE:-stocks_executor}
+      DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASSWORD:-postgres}@stock_postgres:5432/${PG_DATABASE:-stocks_executor}
     volumes:
       - .:/app
       - node_modules:/app/node_modules
-    command: ["sh", "-lc", "[ -d node_modules ] || npm ci; npm run migrate:up && npm run dev:watch"]
+    command:
+      [
+        "sh",
+        "-lc",
+        "[ -d node_modules ] || npm ci; npm run migrate:up && npm run dev:watch",
+      ]
     depends_on:
       stock_postgres:
         condition: service_healthy

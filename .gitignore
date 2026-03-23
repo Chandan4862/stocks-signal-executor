@@ -3,3 +3,7 @@ dist/
 .env
 .DS_Store
 backups/
+# SSH keys
+*.pem
+*.key
+*.pub
