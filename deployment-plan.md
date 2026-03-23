@@ -284,5 +284,9 @@ crontab -e
 
 # Download and run setup script (installs Git, Docker, clones repo, configures firewall & backup cron)
 
-`curl -fsSL https://raw.githubusercontent.com/Chandan4862/stocks-signal-executor/main/scripts/setup.sh -o setup.sh
-sudo bash setup.sh`
+```bash
+# Download and run setup script (installs Git, Docker, clones repo, configures firewall & backup cron)
+
+curl -fsSL https://raw.githubusercontent.com/Chandan4862/stocks-signal-executor/main/scripts/setup.sh -o setup.sh
+sudo bash setup.sh
+```
