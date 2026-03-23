@@ -39,8 +39,8 @@ services:
       POSTGRES_DB: ${PG_DATABASE:-stocks_executor}
       POSTGRES_USER: ${PG_USER:-postgres}
       POSTGRES_PASSWORD: ${PG_PASSWORD:-postgres}
-    # ports:
-    #   - "${PG_PORT:-7432}:5432"
+    ports:
+      - "${PG_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
