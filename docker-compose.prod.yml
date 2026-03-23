@@ -1,28 +1,36 @@
-# Production Docker Compose — Oracle Cloud / any Linux server
-# Usage: docker compose -f docker-compose.prod.yml up -d --build
-#
-# Reads secrets from .env file in the same directory.
-# Postgres data is persisted in a named volume (survives container restarts).
+# Running via docker compose → the container gets vars from .env.docker + overrides from the environment: block.
+# Your local .env file (if it exists) is not injected into the container — it's only used for ${VAR} interpolation in docker-compose.yml.
+# A local .env does not get overwritten by .env.docker or vice versa — they serve different purposes.
 
 services:
   stock_app:
+    # Use builder stage so dev dependencies (ts-node/nodemon) are available
     build:
       context: .
-      # Uses final 'runner' stage (production Node.js only, no devDeps)
     container_name: stocks-executor-app
     env_file:
       - .env
     environment:
-      NODE_ENV: production
       PG_HOST: stock_postgres
-      PG_PORT: "5432"
+      PG_PORT: 5432
       PG_DATABASE: ${PG_DATABASE:-stocks_executor}
       PG_USER: ${PG_USER:-postgres}
       PG_PASSWORD: ${PG_PASSWORD:-postgres}
+      POLLING_INTERVAL_MS: ${POLLING_INTERVAL_MS:-15000}
+      DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASSWORD:-postgres}@stock_postgres:5432/${PG_DATABASE:-stocks_executor}
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+    command:
+      [
+        "sh",
+        "-lc",
+        "[ -d node_modules ] || npm ci; npm run migrate:up && npm run dev",
+      ]
     depends_on:
       stock_postgres:
         condition: service_healthy
-    restart: always
+    restart: unless-stopped
 
   stock_postgres:
     image: postgres:16-alpine
@@ -31,20 +39,18 @@ services:
       POSTGRES_DB: ${PG_DATABASE:-stocks_executor}
       POSTGRES_USER: ${PG_USER:-postgres}
       POSTGRES_PASSWORD: ${PG_PASSWORD:-postgres}
-    # No external port exposure in production (only internal docker network)
-    # Uncomment the next line if you need direct access for debugging:
     # ports:
-    #   - "7432:5432"
+    #   - "${PG_PORT:-7432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 10
-    restart: always
+    restart: unless-stopped
 
 volumes:
   postgres-data:
     driver: local
+  node_modules:
