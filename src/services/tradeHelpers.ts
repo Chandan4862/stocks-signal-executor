@@ -116,8 +116,7 @@ export class TradeHelpers {
    * Prefers averageTradedPrice → price → fallback.
    */
   static resolveChildPrice(childOrder: any, fallbackPrice: number): number {
-    if (childOrder.averageTradedPrice > 0)
-      return childOrder.averageTradedPrice;
+    if (childOrder.averageTradedPrice > 0) return childOrder.averageTradedPrice;
     if (childOrder.price > 0) return childOrder.price;
     return fallbackPrice;
   }

@@ -301,6 +301,42 @@ export class TelegramService {
       }
     });
 
+    // /monitor — manually trigger monitor tick (Phases 3+5)
+    this.bot.command("monitor", async (ctx) => {
+      if (!this.scheduler) {
+        ctx.reply("⚠️ Scheduler not initialized yet. Try again later.");
+        return;
+      }
+
+      ctx.reply("🔄 Running monitor tick (Phases 3+5)…");
+
+      try {
+        const result = await this.scheduler.runMonitor();
+        ctx.reply(result);
+      } catch (err: any) {
+        this.logWarn("/monitor", "Monitor error", err);
+        ctx.reply(`❌ Monitor error: ${err?.message ?? "unknown"}`);
+      }
+    });
+
+    // /reconcile — manually trigger position reconciliation (Phase 6)
+    this.bot.command("reconcile", async (ctx) => {
+      if (!this.scheduler) {
+        ctx.reply("⚠️ Scheduler not initialized yet. Try again later.");
+        return;
+      }
+
+      ctx.reply("🔄 Running reconciliation (Phase 6)…");
+
+      try {
+        const result = await this.scheduler.runReconciliation();
+        ctx.reply(result);
+      } catch (err: any) {
+        this.logWarn("/reconcile", "Reconciliation error", err);
+        ctx.reply(`❌ Reconciliation error: ${err?.message ?? "unknown"}`);
+      }
+    });
+
     // Silently ignore all unrecognised messages — no reply to unauthorized users
   }
 

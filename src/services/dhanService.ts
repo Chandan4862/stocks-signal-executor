@@ -271,27 +271,13 @@ export class DhanService {
         const method = config.method?.toUpperCase() || "GET";
         const url = `${config.baseURL || ""}${config.url || ""}`;
 
-        // Build Headers safely. We omit `common`, `delete`, `get`, `head`, `post`, `put`, `patch` which Axios includes sometimes.
-        const headerPairs: string[] = [];
-        for (const [key, value] of Object.entries(config.headers || {})) {
-          if (
-            typeof value === "string" ||
-            typeof value === "number" ||
-            typeof value === "boolean"
-          ) {
-            headerPairs.push(`-H '${key}: ${value}'`);
-          }
-        }
-
-        const headers = headerPairs.join(" ");
-        const data = config.data ? `-d '${JSON.stringify(config.data)}'` : "";
-
-        const curlCommand =
-          `> [Dhan API] cURL:\ncurl -X ${method} '${url}' \\\n  ${headers} \\\n  ${data}`.trim();
-
-        // Log to audit_logs table
+        // Log API call to audit_logs
         this.audit
-          .debug(LifecycleEvents.DHAN_API_CALL, { curl: curlCommand })
+          .info(LifecycleEvents.DHAN_API_CALL, {
+            method,
+            url,
+            payload: config.data ?? null,
+          })
           .catch(() => {});
 
         return config;

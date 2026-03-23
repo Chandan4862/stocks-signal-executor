@@ -5,10 +5,11 @@ import { Scheduler } from "./services/scheduler";
 import { TelegramService } from "./services/telegramService";
 import { AuditLogService } from "./services/auditLogService";
 import { PostbackService } from "./services/postbackService";
+import { StateStore } from "./services/stateStore";
+import { TokenService } from "./services/tokenService";
 
 async function main() {
   const config = loadConfig();
-  // console.log("Stocks Signal Executor booting with config:", config);
 
   // --- Telegram bot ---
   const telegram = new TelegramService(
@@ -17,6 +18,14 @@ async function main() {
     config.telegram.tradesChatId,
   );
   await telegram.launch();
+
+  // --- Boot TokenService early so /status, /token, /renew work immediately ---
+  const bootStore = new StateStore(config);
+  await bootStore.connect();
+  const bootAudit = new AuditLogService(bootStore.pg, telegram);
+  const tokenService = new TokenService(config, bootStore, bootAudit);
+  telegram.setTokenService(tokenService);
+  telegram.setAudit(bootAudit);
 
   // --- Scheduler ---
   const scheduler = new Scheduler(config, telegram);

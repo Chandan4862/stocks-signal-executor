@@ -36,7 +36,11 @@ export class TradeSyncService {
 
   async fetchClosedTrades(): Promise<ClosedTrade[]> {
     const { data } = await axios.get(this.cfg.apis.closedTradesUrl);
-    return (data as any[]).map(this.normalizeClosed);
+    const list = Array.isArray(data) ? data : (data?.list?.data ?? []);
+    if (Array.isArray(list) && list.length > 0) {
+      return (list as any[]).map(this.normalizeClosed);
+    }
+    return list.map(this.normalizeClosed);
   }
 
   // Normalize API payloads (Phase 1): parse strings -> numbers & parse meta_data
