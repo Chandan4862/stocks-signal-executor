@@ -4,7 +4,7 @@
 
 services:
   stock_app:
-    # Use builder stage so dev dependencies (ts-node/nodemon) are available
+    # Production: uses compiled JS from Dockerfile (multi-stage build)
     build:
       context: .
     container_name: stocks-executor-app
@@ -18,14 +18,11 @@ services:
       PG_PASSWORD: ${PG_PASSWORD:-postgres}
       POLLING_INTERVAL_MS: ${POLLING_INTERVAL_MS:-15000}
       DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASSWORD:-postgres}@stock_postgres:5432/${PG_DATABASE:-stocks_executor}
-    volumes:
-      - .:/app
-      - node_modules:/app/node_modules
     command:
       [
         "sh",
         "-lc",
-        "[ -d node_modules ] || npm ci; npm run migrate:up && npm run dev",
+        "npx node-pg-migrate up --migration-file-language sql --migrations-dir db/migrations && node dist/index.js",
       ]
     depends_on:
       stock_postgres:
@@ -53,4 +50,3 @@ services:
 volumes:
   postgres-data:
     driver: local
-  node_modules:
