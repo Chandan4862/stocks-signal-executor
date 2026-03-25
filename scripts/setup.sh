@@ -14,7 +14,7 @@
 #   6. Opens firewall for SSH only (Postgres stays internal)
 #   7. Sets up daily backup cron job
 
-set -euo pipefail
+set -u  # catch undefined vars, but do NOT exit on errors (let each step proceed)
 
 USER_NAME="${SUDO_USER:-$USER}"
 PROJECT_DIR="/home/${USER_NAME}/stocks-signal-executor"
@@ -40,12 +40,14 @@ else
     echo "Repo cloned to ${PROJECT_DIR}"
 fi
 
-echo "=== [4/7] Installing Docker ==="
+echo "=== [4/7] Installing Docker + Compose ==="
 if command -v docker &> /dev/null; then
     echo "Docker already installed: $(docker --version)"
 else
-    curl -fsSL https://get.docker.com | sh
+    apt-get install -y docker.io docker-compose-v2
+    systemctl enable --now docker
     echo "Docker installed: $(docker --version)"
+    echo "Compose installed: $(docker compose version)"
 fi
 
 echo "=== [5/7] Adding '${USER_NAME}' to docker group ==="
