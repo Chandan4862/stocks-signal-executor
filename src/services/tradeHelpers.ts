@@ -1,30 +1,26 @@
 /*
   TradeHelpers: Shared utilities for trade lifecycle services.
-  Encapsulates OCO exit placement, price resolution, error payload
-  construction, and PnL recording.
+  Encapsulates entry confirmation, sell placement, price resolution,
+  error payload construction, and PnL recording.
 */
 
 import type { AppConfig } from "../config/schema";
-import {
-  DhanService,
-  DhanApiError,
-  PlaceForeverOrderRequest,
-} from "./dhanService";
+import { DhanService, DhanApiError, PlaceOrderRequest } from "./dhanService";
 import { StateStore } from "./stateStore";
 import { AuditLogService } from "./auditLogService";
 import { LifecycleEvents } from "../enums/trade";
 
 /**
- * Options for placing an OCO exit order and transitioning a trade to ENTERED.
+ * Options for placing a sell order and closing a trade.
  */
-export interface OcoExitOptions {
+export interface SellAndCloseOptions {
   store: StateStore;
   dhan: DhanService;
   audit: AuditLogService;
   tradeRow: any;
-  entryPrice: number;
-  quantity: number;
-  source: string; // e.g. "monitorPendingEntries", "reconcilePositions — Path A"
+  exitPrice: number; // price to record (may differ from actual fill)
+  source: string; // e.g. "monitorEnteredTrades", "processClosedTrades"
+  closedState?: string; // "CLOSED" | "CLOSED_BY_ANALYST" — defaults to "CLOSED"
 }
 
 /**
@@ -33,81 +29,166 @@ export interface OcoExitOptions {
  */
 export class TradeHelpers {
   /**
-   * Place OCO exit order and update trade to ENTERED state.
-   * Single Responsibility: encapsulates OCO request building, placement, DB update,
-   * audit logging, and Telegram notification.
-   *
-   * @returns true if OCO was successfully placed, false otherwise.
+   * Mark a trade as ENTERED — update state, entry price, quantity.
+   * Does NOT place any exit order.
    */
-  static async placeOcoExitAndEnter(
-    cfg: AppConfig,
-    opts: OcoExitOptions,
-  ): Promise<boolean> {
-    const { store, dhan, audit, tradeRow, entryPrice, quantity, source } = opts;
+  static async markEntered(
+    store: StateStore,
+    audit: AuditLogService,
+    tradeRow: any,
+    entryPrice: number,
+    quantity: number,
+    source: string,
+  ): Promise<void> {
+    await store.pg.query(
+      `UPDATE trades
+       SET state = 'ENTERED',
+           entered_at = NOW(),
+           entry_price = $1,
+           quantity = $2
+       WHERE id = $3`,
+      [entryPrice, quantity, tradeRow.id],
+    );
 
-    const targetPrice = Number(tradeRow.target) || entryPrice * 1.05;
-    const stopLossPrice = Number(tradeRow.sl_trigger) || entryPrice * 0.95;
-
-    const exitReq: PlaceForeverOrderRequest = {
-      dhanClientId: cfg.dhan.clientId,
-      correlationId: `exit_${tradeRow.id}`.slice(0, 30),
-      orderFlag: "OCO",
-      transactionType: "SELL",
-      exchangeSegment: "NSE_EQ",
-      productType: "CNC",
-      orderType: "LIMIT",
-      validity: "DAY",
-      securityId: tradeRow.security_id,
+    await audit.info(LifecycleEvents.BUY_PLACED, {
+      id: tradeRow.id,
+      source,
+      message: "Entry confirmed. Trade is now ENTERED.",
+      entryPrice,
       quantity,
-      // Leg 1: Target
-      price: targetPrice,
-      triggerPrice: targetPrice,
-      // Leg 2: Stop Loss
-      price1: stopLossPrice,
-      triggerPrice1: stopLossPrice,
-      quantity1: quantity,
-    };
+    });
+
+    await audit.notify(
+      `✅ ENTRY Confirmed\n` +
+        `Symbol: ${tradeRow.symbol}\n` +
+        `Entered @ ₹${entryPrice} | Qty: ${quantity}\n` +
+        `Source: ${source}`,
+    );
+  }
+
+  /**
+   * Determine if a position should be sold based on last traded price.
+   * Returns 'TARGET' if price >= target, 'STOPLOSS' if price <= sl, null otherwise.
+   */
+  static shouldSell(
+    lastTradedPrice: number,
+    target: number | null | undefined,
+    sl: number | null | undefined,
+  ): "TARGET" | "STOPLOSS" | null {
+    if (target && lastTradedPrice >= target) return "TARGET";
+    if (sl && lastTradedPrice <= sl) return "STOPLOSS";
+    return null;
+  }
+
+  /**
+   * Place a Market SELL order with atomic sell guard and close the trade.
+   *
+   * Flow:
+   *  1. Atomic guard: SET sell_order_id WHERE sell_order_id IS NULL (S1)
+   *  2. Place Market SELL via dhan.placeOrder()
+   *  3. Record PnL
+   *  4. Update state to CLOSED / CLOSED_BY_ANALYST
+   *
+   * On sell failure: clears sell_order_id, logs error, notifies user.
+   *
+   * @returns { success: true, orderId } or { success: false, error }
+   */
+  static async placeSellAndClose(
+    cfg: AppConfig,
+    opts: SellAndCloseOptions,
+  ): Promise<{ success: boolean; orderId?: string; error?: string }> {
+    const { store, dhan, audit, tradeRow, exitPrice, source } = opts;
+    const closedState = opts.closedState ?? "CLOSED";
+
+    // S1: Atomic sell guard — prevent duplicate sells
+    const pendingId = `pending_${tradeRow.id}`;
+    const guardRes = await store.pg.query(
+      `UPDATE trades SET sell_order_id = $1 WHERE id = $2 AND sell_order_id IS NULL RETURNING id`,
+      [pendingId, tradeRow.id],
+    );
+
+    if (guardRes.rows.length === 0) {
+      // sell_order_id already set — another sell was already attempted
+      return { success: false, error: "Sell already in progress or completed" };
+    }
 
     try {
-      const exitRes = await dhan.placeForeverOrder(exitReq);
+      // Place Market SELL
+      const sellReq: PlaceOrderRequest = {
+        dhanClientId: cfg.dhan.clientId,
+        correlationId: `sell_${tradeRow.id}`.slice(0, 30),
+        transactionType: "SELL",
+        exchangeSegment: "NSE_EQ",
+        productType: "CNC",
+        orderType: "MARKET",
+        validity: "DAY",
+        securityId: tradeRow.security_id,
+        quantity: tradeRow.quantity,
+      };
+      // If this fails → catch block clears sell_order_id, trade stays ENTERED, retries next tick
+      const sellRes = await dhan.placeOrder(sellReq);
 
+      // Update sell_order_id with actual orderId
       await store.pg.query(
-        `UPDATE trades
-         SET state = 'ENTERED',
-             entered_at = NOW(),
-             entry_price = $1,
-             exit_order_id = $2,
-             quantity = $3
-         WHERE id = $4`,
-        [entryPrice, exitRes.orderId, quantity, tradeRow.id],
+        `UPDATE trades SET sell_order_id = $1 WHERE id = $2`,
+        [sellRes.orderId, tradeRow.id],
       );
 
-      await audit.info(LifecycleEvents.BUY_PLACED, {
+      // Record PnL
+      await TradeHelpers.recordPnl(store, tradeRow, exitPrice);
+
+      // Mark trade closed
+      await store.pg.query(
+        `UPDATE trades SET state = $1, exited_at = NOW(), exit_price = $2 WHERE id = $3`,
+        [closedState, exitPrice, tradeRow.id],
+      );
+
+      const entryPrice = Number(tradeRow.entry_price);
+      const pnl = (exitPrice - entryPrice) * tradeRow.quantity;
+      const pnlSign = pnl >= 0 ? "+" : "";
+      const emoji = pnl >= 0 ? "🟢" : "🔴";
+
+      await audit.info(LifecycleEvents.SELL_PLACED, {
         id: tradeRow.id,
         source,
-        message: "Placed OCO Exit. Trade is now ENTERED.",
-        entryPrice,
-        exitOrderId: exitRes.orderId,
+        message: `Sell placed. Trade ${closedState}.`,
+        exitPrice,
+        orderId: sellRes.orderId,
+        pnl,
       });
 
       await audit.notify(
-        `✅ ENTRY Confirmed — OCO Exit Placed\n` +
+        `${emoji} SELL — Position Closed\n` +
           `Symbol: ${tradeRow.symbol}\n` +
-          `Entered @ ₹${entryPrice} | Qty: ${quantity}\n` +
-          `OCO Exit: ${exitRes.orderId}\n` +
-          `Target: ₹${targetPrice} | SL: ₹${stopLossPrice}\n` +
+          `Entry: ₹${entryPrice} → Exit: ₹${exitPrice}\n` +
+          `Qty: ${tradeRow.quantity} | PnL: ${pnlSign}₹${pnl.toFixed(2)}\n` +
           `Source: ${source}`,
       );
 
-      return true;
+      return { success: true, orderId: sellRes.orderId };
     } catch (err: any) {
+      // Sell failed — clear sell_order_id so next tick can retry
+      await store.pg.query(
+        `UPDATE trades SET sell_order_id = NULL WHERE id = $1`,
+        [tradeRow.id],
+      );
+
       const payload = TradeHelpers.buildErrorPayload(
-        tradeRow.id,
-        `${source} — OCO placement failed`,
+        String(tradeRow.id),
+        `${source} — SELL failed`,
         err,
       );
       await audit.critical(LifecycleEvents.ERROR_OCCURRED, payload);
-      return false;
+
+      await audit.notify(
+        `🚨 SELL FAILED\n` +
+          `Symbol: ${tradeRow.symbol}\n` +
+          `Qty: ${tradeRow.quantity}\n` +
+          `Error: ${err?.message ?? String(err)}\n` +
+          `Will retry on next tick. Manual exit may be needed.`,
+      );
+
+      return { success: false, error: err?.message ?? String(err) };
     }
   }
 
