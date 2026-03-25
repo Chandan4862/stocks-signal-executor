@@ -22,11 +22,12 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Install only production dependencies
-COPY package.json ./
-RUN npm i --omit=dev
+# Copy package.json + node_modules from builder, then prune dev deps
+COPY package.json package-lock.json ./
+COPY --from=builder /app/node_modules ./node_modules
+RUN npm prune --omit=dev
 
-# Copy build output and schema (for reference)
+# Copy build output and migration files
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/db ./db
 
