@@ -33,3 +33,10 @@ echo "[$(date)] Backup saved: ${BACKUP_FILE} (${BACKUP_SIZE})"
 find "$BACKUP_DIR" -name "db-*.sql.gz" -mtime +${RETENTION_DAYS} -delete
 REMAINING=$(find "$BACKUP_DIR" -name "db-*.sql.gz" | wc -l | tr -d ' ')
 echo "[$(date)] Pruned old backups. ${REMAINING} backup(s) retained."
+
+# Push backup to git
+cd "$PROJECT_DIR"
+git add -f backups/
+git commit -m "backup: db-${TIMESTAMP}" --no-verify || echo "[$(date)] Nothing new to commit."
+git push origin main || echo "[$(date)] Git push failed."
+echo "[$(date)] Backup pushed to git."

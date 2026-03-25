@@ -74,13 +74,40 @@ export class TelegramService {
     if (this.launched) return;
     this.launched = true;
 
-    // Launch in background (does not block)
-    this.bot.launch().catch((err) => {
-      this.logWarn("launch", "Bot launch error", err);
+    const MAX_RETRIES = 5;
+    const BASE_DELAY_MS = 5_000;
+
+    const attemptLaunch = async (attempt: number): Promise<void> => {
+      try {
+        await this.bot.launch();
+        this.logInfo("launch", "Bot launched (polling)");
+      } catch (err: any) {
+        const delay = Math.min(BASE_DELAY_MS * 2 ** (attempt - 1), 60_000);
+        this.logWarn(
+          "launch",
+          `Bot launch failed (attempt ${attempt}/${MAX_RETRIES}), retrying in ${delay / 1000}s`,
+          err,
+        );
+
+        if (attempt >= MAX_RETRIES) {
+          this.logWarn(
+            "launch",
+            "Bot launch exhausted all retries — giving up",
+            err,
+          );
+          this.launched = false;
+          return;
+        }
+
+        await new Promise((r) => setTimeout(r, delay));
+        return attemptLaunch(attempt + 1);
+      }
+    };
+
+    // Launch in background (does not block app startup)
+    attemptLaunch(1).catch(() => {
       this.launched = false;
     });
-
-    this.logInfo("launch", "Bot launched (polling)");
   }
 
   /**
