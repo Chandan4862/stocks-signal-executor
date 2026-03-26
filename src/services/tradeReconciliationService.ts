@@ -15,11 +15,7 @@
 */
 
 import type { AppConfig } from "../config/schema";
-import {
-  DhanService,
-  DhanApiError,
-  PlaceOrderRequest,
-} from "./dhanService";
+import { DhanService, DhanApiError, PlaceOrderRequest } from "./dhanService";
 import { StateStore } from "./stateStore";
 import { AuditLogService } from "./auditLogService";
 import { LifecycleEvents } from "../enums/trade";
@@ -57,8 +53,16 @@ export class TradeReconciliationService {
         // Let's cancel whatever is pending and clear it out
         if (tradeRow.state === "AWAITING_ENTRY") {
           try {
-            if (tradeRow.buy_order_id) {
-              await dhan.cancelForeverOrder(tradeRow.buy_order_id);
+            try {
+              if (tradeRow.buy_order_id) {
+                await dhan.cancelForeverOrder(tradeRow.buy_order_id);
+              }
+            } catch (err: any) {
+              await audit.error(LifecycleEvents.ERROR_OCCURRED, {
+                id: ct.id,
+                action: "Cancel pre-entry order on analyst close",
+                error: err?.message ?? String(err),
+              });
             }
             await store.pg.query(
               `UPDATE trades SET state = 'CLOSED' WHERE id = $1`,
@@ -84,10 +88,17 @@ export class TradeReconciliationService {
           }
         } else if (tradeRow.state === "ENTERED") {
           try {
-            if (tradeRow.exit_order_id) {
-              await dhan.cancelForeverOrder(tradeRow.exit_order_id);
+            try {
+              if (tradeRow.exit_order_id) {
+                await dhan.cancelForeverOrder(tradeRow.exit_order_id);
+              }
+            } catch (err: any) {
+              await audit.error(LifecycleEvents.ERROR_OCCURRED, {
+                id: ct.id,
+                action: "Cancel exit order on analyst close",
+                error: err?.message ?? String(err),
+              });
             }
-
             // We possess the stock, fire an immediate Market SELL to liquidate at CMP
             const sellReq: PlaceOrderRequest = {
               dhanClientId: this.cfg.dhan.clientId,
@@ -203,7 +214,10 @@ export class TradeReconciliationService {
           // placement failed and holding not yet visible (T+1 settlement).
           // Must check /orders for a TRADED child order before cancelling.
           const foreverOrder = Array.isArray(foreverOrders)
-            ? TradeHelpers.findForeverOrder(foreverOrders, tradeRow.buy_order_id)
+            ? TradeHelpers.findForeverOrder(
+                foreverOrders,
+                tradeRow.buy_order_id,
+              )
             : undefined;
 
           // Check /orders for a TRADED child order linked to this forever order
@@ -231,10 +245,7 @@ export class TradeReconciliationService {
               quantity: qty,
               source: "reconcilePositions — Path C (child order recovery)",
             });
-          } else if (
-            !foreverOrder ||
-            foreverOrder.orderStatus !== "PENDING"
-          ) {
+          } else if (!foreverOrder || foreverOrder.orderStatus !== "PENDING") {
             // No TRADED child order, no holding, forever order gone/not pending
             // → entry was truly rejected/expired/cancelled
             await store.pg.query(
