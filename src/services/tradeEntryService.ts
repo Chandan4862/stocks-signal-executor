@@ -340,7 +340,8 @@ export class TradeEntryService {
          target = EXCLUDED.target,
          sl_trigger = EXCLUDED.sl_trigger,
          capital = EXCLUDED.capital,
-         reco_id = EXCLUDED.reco_id`,
+         reco_id = EXCLUDED.reco_id
+       WHERE trades.state NOT IN ('ENTERED', 'CLOSED', 'CLOSED_BY_ANALYST')`,
       [
         v.id,
         v.symbol,

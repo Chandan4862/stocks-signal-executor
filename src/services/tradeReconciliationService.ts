@@ -208,22 +208,28 @@ export class TradeReconciliationService {
           );
         } else if (tradeRow.sell_order_id) {
           // Path D: Holding exists but sell_order_id is set (stale sell attempt)
-          // Notify user to manually exit — do NOT change state
+          // Clear sell_order_id to allow retry, then notify user
+          await store.pg.query(
+            `UPDATE trades SET sell_order_id = NULL WHERE id = $1`,
+            [tradeRow.id],
+          );
+
           await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
             id: tradeRow.id,
             action: "reconcilePositions — Path D",
             message:
-              "ENTERED trade has sell_order_id set but holding still exists. Previous sell may have failed.",
+              "ENTERED trade had stale sell_order_id. Cleared to allow retry. Notified user.",
             symbol: tradeRow.symbol,
             sellOrderId: tradeRow.sell_order_id,
           });
 
           await audit.notify(
-            `🚨 Manual Exit Needed\n` +
+            `🚨 Stale Sell Cleared\n` +
               `Symbol: ${tradeRow.symbol}\n` +
               `Qty: ${tradeRow.quantity}\n` +
-              `A previous sell attempt exists (${tradeRow.sell_order_id}) but holding still present.\n` +
-              `Please exit manually from Dhan app.`,
+              `Previous sell attempt (${tradeRow.sell_order_id}) failed but holding still present.\n` +
+              `sell_order_id cleared — will retry on next monitor tick.\n` +
+              `If urgent, please exit manually from Dhan app.`,
           );
         }
       }

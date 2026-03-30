@@ -31,6 +31,8 @@ export class TradeHelpers {
   /**
    * Mark a trade as ENTERED — update state, entry price, quantity.
    * Does NOT place any exit order.
+   * Guards on state = AWAITING_ENTRY to prevent overwriting CLOSED/ENTERED.
+   * @returns true if state was updated, false if trade was no longer AWAITING_ENTRY.
    */
   static async markEntered(
     store: StateStore,
@@ -39,16 +41,22 @@ export class TradeHelpers {
     entryPrice: number,
     quantity: number,
     source: string,
-  ): Promise<void> {
-    await store.pg.query(
+  ): Promise<boolean> {
+    const res = await store.pg.query(
       `UPDATE trades
        SET state = 'ENTERED',
            entered_at = NOW(),
            entry_price = $1,
            quantity = $2
-       WHERE id = $3`,
+       WHERE id = $3 AND state = 'AWAITING_ENTRY'
+       RETURNING id`,
       [entryPrice, quantity, tradeRow.id],
     );
+
+    if (res.rows.length === 0) {
+      // Trade was no longer AWAITING_ENTRY — state changed concurrently
+      return false;
+    }
 
     await audit.info(LifecycleEvents.BUY_PLACED, {
       id: tradeRow.id,
@@ -64,6 +72,8 @@ export class TradeHelpers {
         `Entered @ ₹${entryPrice} | Qty: ${quantity}\n` +
         `Source: ${source}`,
     );
+
+    return true;
   }
 
   /**
