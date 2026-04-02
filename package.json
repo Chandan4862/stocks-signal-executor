@@ -22,12 +22,14 @@
     "axios": "^1.6.8",
     "dayjs": "^1.11.10",
     "dotenv": "^16.4.1",
+    "luxon": "^3.7.2",
     "node-pg-migrate": "^8.0.4",
     "pg": "^8.11.3",
     "telegraf": "^4.16.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/luxon": "^3.7.1",
     "@types/node": "^20.11.0",
     "@types/pg": "^8.16.0",
     "nock": "^13.5.2",

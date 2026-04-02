@@ -15,6 +15,7 @@
     - Phase 6: reconcilePositions     (safety net)
 */
 
+import { DateTime } from "luxon";
 import type { AppConfig } from "../config/schema";
 import { backoff } from "../utils/retry";
 import { StateStore } from "./stateStore";
@@ -417,22 +418,23 @@ export class Scheduler {
     callback: () => Promise<void>,
   ): NodeJS.Timeout {
     const [hours, mins] = time.split(":").map(Number);
-    const now = new Date();
+    const IST = "Asia/Kolkata";
 
-    const target = new Date(now);
-    target.setHours(hours, mins, 0, 0);
+    let target = DateTime.now()
+      .setZone(IST)
+      .set({ hour: hours, minute: mins, second: 0, millisecond: 0 });
 
-    // If already past this time today, schedule for tomorrow
-    if (now >= target) {
-      target.setDate(target.getDate() + 1);
+    // If already past this time today (in IST), schedule for tomorrow
+    if (target <= DateTime.now().setZone(IST)) {
+      target = target.plus({ days: 1 });
     }
 
-    const msUntil = target.getTime() - now.getTime();
+    const msUntil = target.toMillis() - Date.now();
 
     return setTimeout(async () => {
-      // Skip weekends
-      const day = new Date().getDay();
-      if (day !== 0 && day !== 6) {
+      // Skip weekends (IST day)
+      const day = DateTime.now().setZone(IST).weekday; // 1=Mon, 7=Sun
+      if (day !== 6 && day !== 7) {
         await callback();
       } else {
         // Still re-schedule on weekends so Monday fires
@@ -443,15 +445,19 @@ export class Scheduler {
 
   private logSchedule(label: string, time: string): void {
     const [hours, mins] = time.split(":").map(Number);
-    const now = new Date();
-    const target = new Date(now);
-    target.setHours(hours, mins, 0, 0);
-    if (now >= target) target.setDate(target.getDate() + 1);
-    const hoursUntil = ((target.getTime() - now.getTime()) / 3600000).toFixed(
-      1,
-    );
+    const IST = "Asia/Kolkata";
+
+    let target = DateTime.now()
+      .setZone(IST)
+      .set({ hour: hours, minute: mins, second: 0, millisecond: 0 });
+
+    if (target <= DateTime.now().setZone(IST)) {
+      target = target.plus({ days: 1 });
+    }
+
+    const hoursUntil = ((target.toMillis() - Date.now()) / 3600000).toFixed(1);
     console.log(
-      `  ${label} scheduled in ${hoursUntil}h (${target.toLocaleString("en-IN")})`,
+      `  ${label} scheduled in ${hoursUntil}h (${target.toFormat("dd/MM/yyyy, hh:mm:ss a")} IST)`,
     );
   }
 
