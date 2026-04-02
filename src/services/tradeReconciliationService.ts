@@ -1,21 +1,22 @@
 /*
-  TradeReconciliationService: Phase 4 + 6 — Handle external closures
-  and reconcile Dhan holdings with local trade state.
+  TradeReconciliationService: Handle external closures and reconcile
+  Dhan holdings with local trade state.
 
-  Phase 4 (processClosedTrades):
+  processClosedTrades:
   When an analyst closes a trade on the external platform, cancel pending
-  orders and liquidate positions.
+  orders and liquidate positions. Matches by reco_id (fallback: symbol).
 
-  Phase 6 (reconcilePositions):
-  Three reconciliation paths:
+  reconcilePositions:
+  Four reconciliation paths:
    A. AWAITING_ENTRY + holding exists → entry happened while server was down
    B. ENTERED + no holding → exit happened outside our knowledge
    C. AWAITING_ENTRY + no holding + forever order not PENDING
       → entry was rejected/expired while server was down
+   D. ENTERED + holding + sell_order_id set → stale sell attempt, notify user
 */
 
 import type { AppConfig } from "../config/schema";
-import { DhanService, DhanApiError, PlaceOrderRequest } from "./dhanService";
+import { DhanService } from "./dhanService";
 import { StateStore } from "./stateStore";
 import { AuditLogService } from "./auditLogService";
 import { LifecycleEvents } from "../enums/trade";
@@ -25,7 +26,10 @@ import type { ClosedTrade } from "../models/closedTrade";
 export class TradeReconciliationService {
   constructor(private cfg: AppConfig) {}
 
-  // Phase 4: Handle External Closures via Closed Trades API
+  // ─── processClosedTrades ──────────────────────────────────────────
+  // Matches closed trades by reco_id (S4: fallback by symbol).
+  // AWAITING_ENTRY → cancel Forever BUY, mark CLOSED.
+  // ENTERED → atomic sell guard → Market SELL → CLOSED_BY_ANALYST.
   async processClosedTrades(
     store: StateStore,
     dhan: DhanService,
@@ -34,113 +38,27 @@ export class TradeReconciliationService {
   ): Promise<void> {
     try {
       for (const ct of closedTrades) {
-        // Check if this trade exists in our local tracker
-        const tradeRes = await store.pg.query(
-          `SELECT * FROM trades WHERE id = $1`,
-          [ct.id],
-        );
-        if (tradeRes.rows.length === 0) continue;
+        // Match by reco_id first, then fallback to symbol
+        const tradeRow = await this.findLocalTrade(store, ct);
+        if (!tradeRow) continue;
 
-        const tradeRow = tradeRes.rows[0];
-
-        // If the trade is already closed locally, do nothing
+        // Already closed locally — skip
         if (
           tradeRow.state === "CLOSED" ||
           tradeRow.state === "CLOSED_BY_ANALYST"
         )
           continue;
 
-        // Let's cancel whatever is pending and clear it out
         if (tradeRow.state === "AWAITING_ENTRY") {
-          try {
-            try {
-              if (tradeRow.buy_order_id) {
-                await dhan.cancelForeverOrder(tradeRow.buy_order_id);
-              }
-            } catch (err: any) {
-              await audit.error(LifecycleEvents.ERROR_OCCURRED, {
-                id: ct.id,
-                action: "Cancel pre-entry order on analyst close",
-                error: err?.message ?? String(err),
-              });
-            }
-            await store.pg.query(
-              `UPDATE trades SET state = 'CLOSED' WHERE id = $1`,
-              [ct.id],
-            );
-            await audit.info(LifecycleEvents.SKIP_TRADE, {
-              id: ct.id,
-              message:
-                "Trade closed by analyst before entry executed. Cancelled pending Forever order.",
-            });
-
-            await audit.notify(
-              `🔄 Trade Closed (Pre-Entry)\n` +
-                `Symbol: ${tradeRow.symbol}\n` +
-                `Analyst closed before entry triggered. Pending order cancelled.`,
-            );
-          } catch (err: any) {
-            await audit.error(LifecycleEvents.ERROR_OCCURRED, {
-              id: ct.id,
-              action: "Cancel pre-entry order on analyst close",
-              error: err?.message ?? String(err),
-            });
-          }
+          await this.handleClosedAwaitingEntry(
+            store,
+            dhan,
+            audit,
+            tradeRow,
+            ct,
+          );
         } else if (tradeRow.state === "ENTERED") {
-          try {
-            try {
-              if (tradeRow.exit_order_id) {
-                await dhan.cancelForeverOrder(tradeRow.exit_order_id);
-              }
-            } catch (err: any) {
-              await audit.error(LifecycleEvents.ERROR_OCCURRED, {
-                id: ct.id,
-                action: "Cancel exit order on analyst close",
-                error: err?.message ?? String(err),
-              });
-            }
-            // We possess the stock, fire an immediate Market SELL to liquidate at CMP
-            const sellReq: PlaceOrderRequest = {
-              dhanClientId: this.cfg.dhan.clientId,
-              correlationId: `liq_${ct.id}`.slice(0, 30),
-              transactionType: "SELL",
-              exchangeSegment: "NSE_EQ",
-              productType: "CNC",
-              orderType: "MARKET",
-              validity: "DAY",
-              securityId: tradeRow.security_id,
-              quantity: tradeRow.quantity,
-            };
-            await dhan.placeOrder(sellReq);
-
-            const exitPrice = ct.cmp ?? Number(tradeRow.entry_price);
-            await store.pg.query(
-              `UPDATE trades SET state = 'CLOSED_BY_ANALYST', exited_at = NOW(), exit_price = $1 WHERE id = $2`,
-              [exitPrice, ct.id],
-            );
-
-            await TradeHelpers.recordPnl(store, tradeRow, exitPrice);
-
-            await audit.info(LifecycleEvents.SELL_PLACED, {
-              id: ct.id,
-              message:
-                "Analyst officially closed the trade. Liquidated position at Market.",
-            });
-
-            await audit.notify(
-              `📤 SELL — Analyst Closed Trade\n` +
-                `Symbol: ${tradeRow.symbol}\n` +
-                `Liquidated @ Market (₹${exitPrice})\n` +
-                `Entry was ₹${tradeRow.entry_price}`,
-            );
-          } catch (err: any) {
-            const payload = TradeHelpers.buildErrorPayload(
-              String(ct.id),
-              "Liquidate closed trade",
-              err,
-            );
-            await audit.critical(LifecycleEvents.ERROR_OCCURRED, payload);
-          }
+          await this.handleClosedEntered(store, dhan, audit, tradeRow, ct);
         }
       }
     } catch (err: any) {
@@ -151,16 +69,7 @@ export class TradeReconciliationService {
     }
   }
 
-  // Phase 6: Reconcile Dhan holdings with local trades table
-  // Uses /holdings — holdings show CNC stock ownership across days.
-  //
-  // Three reconciliation paths:
-  //  A. AWAITING_ENTRY + holding exists → entry happened while server was down
-  //     → update to ENTERED, use avgCostPrice, place OCO exit (2nd leg)
-  //  B. ENTERED + no holding → exit happened outside our knowledge
-  //     → mark CLOSED
-  //  C. AWAITING_ENTRY + no holding + forever order not PENDING
-  //     → entry was rejected/expired while server was down → mark CANCELLED
+  // ─── reconcilePositions ───────────────────────────────────────────
   async reconcilePositions(
     store: StateStore,
     dhan: DhanService,
@@ -173,10 +82,7 @@ export class TradeReconciliationService {
       const foreverOrders = await dhan.getForeverOrders();
       const regularOrders = await dhan.getOrders();
 
-      // ── Path A: AWAITING_ENTRY trades that already have holdings ──
-      // This catches entries that happened while the server was down.
-      // forever/orders only shows TRIGGERED for one day, so if we missed it,
-      // the only evidence is the holding itself.
+      // ── Path A: AWAITING_ENTRY + holding exists ──
       const awaitingRes = await store.pg.query(
         `SELECT * FROM trades WHERE state = 'AWAITING_ENTRY' AND buy_order_id IS NOT NULL`,
       );
@@ -187,32 +93,23 @@ export class TradeReconciliationService {
         );
 
         if (holding && holding.totalQty > 0) {
-          // Holding exists! Entry happened while we were down.
-          // Use avgCostPrice as entry price (best available data).
+          // Holding exists — entry happened while we were down
           const entryPrice =
             holding.avgCostPrice > 0
               ? holding.avgCostPrice
               : Number(tradeRow.entry_price);
-
           const qty = Math.min(tradeRow.quantity, holding.totalQty);
-          const targetPrice = Number(tradeRow.target) || entryPrice * 1.05;
-          const stopLossPrice =
-            Number(tradeRow.sl_trigger) || entryPrice * 0.95;
 
-          await TradeHelpers.placeOcoExitAndEnter(this.cfg, {
+          await TradeHelpers.markEntered(
             store,
-            dhan,
             audit,
             tradeRow,
             entryPrice,
-            quantity: qty,
-            source: "reconcilePositions — Path A (holdings recovery)",
-          });
+            qty,
+            "reconcilePositions — Path A (holdings recovery)",
+          );
         } else {
           // ── Path C: AWAITING_ENTRY + no holding ──
-          // Could be: (1) entry rejected/expired, or (2) entry TRADED but OCO
-          // placement failed and holding not yet visible (T+1 settlement).
-          // Must check /orders for a TRADED child order before cancelling.
           const foreverOrder = Array.isArray(foreverOrders)
             ? TradeHelpers.findForeverOrder(
                 foreverOrders,
@@ -220,7 +117,7 @@ export class TradeReconciliationService {
               )
             : undefined;
 
-          // Check /orders for a TRADED child order linked to this forever order
+          // Check /orders for a TRADED child order (S5 recovery)
           const tradedChild = regularOrders.find(
             (o) =>
               String(o.algoId) === String(tradeRow.buy_order_id) &&
@@ -228,26 +125,23 @@ export class TradeReconciliationService {
           );
 
           if (tradedChild) {
-            // Entry DID succeed! The child order is TRADED.
-            // OCO placement must have failed previously. Retry it now.
+            // Entry DID succeed via child order
             const entryPrice = TradeHelpers.resolveChildPrice(
               tradedChild,
               Number(tradeRow.entry_price),
             );
             const qty = tradedChild.filledQty || tradeRow.quantity;
 
-            await TradeHelpers.placeOcoExitAndEnter(this.cfg, {
+            await TradeHelpers.markEntered(
               store,
-              dhan,
               audit,
               tradeRow,
               entryPrice,
-              quantity: qty,
-              source: "reconcilePositions — Path C (child order recovery)",
-            });
+              qty,
+              "reconcilePositions — Path C (child order recovery)",
+            );
           } else if (!foreverOrder || foreverOrder.orderStatus !== "PENDING") {
-            // No TRADED child order, no holding, forever order gone/not pending
-            // → entry was truly rejected/expired/cancelled
+            // No holding, no traded child, forever order gone/not pending
             await store.pg.query(
               `UPDATE trades SET state = 'CANCELLED' WHERE id = $1`,
               [tradeRow.id],
@@ -257,7 +151,7 @@ export class TradeReconciliationService {
               id: tradeRow.id,
               action: "reconcilePositions",
               message:
-                "Stale AWAITING_ENTRY: no holding, no traded child order, forever order gone/not pending. Marked CANCELLED.",
+                "Stale AWAITING_ENTRY: no holding, no traded child, forever order gone/not pending. Marked CANCELLED.",
               symbol: tradeRow.symbol,
               foreverOrderFound: !!foreverOrder,
               foreverStatus: foreverOrder?.orderStatus ?? "NOT_FOUND",
@@ -270,30 +164,29 @@ export class TradeReconciliationService {
                 `Likely rejected/expired while server was down.`,
             );
           }
-          // else: forever order still PENDING, no holding yet → still waiting for trigger
+          // else: forever order still PENDING → still waiting for trigger
         }
       }
 
-      // ── Path B: ENTERED trades with no holding ──
-      // Exit happened outside our knowledge (manual sell, Dhan app, etc.)
+      // ── Path B: ENTERED + no holding → CLOSED ──
       const enteredRes = await store.pg.query(
         `SELECT * FROM trades WHERE state = 'ENTERED'`,
       );
 
       for (const tradeRow of enteredRes.rows) {
+        // Skip same-day entries (T+1 settlement)
+        if (tradeRow.entered_at) {
+          const enteredDate = new Date(tradeRow.entered_at).toDateString();
+          const today = new Date().toDateString();
+          if (enteredDate === today) continue;
+        }
+
         const holding = holdings.find(
           (h) => String(h.securityId) === String(tradeRow.security_id),
         );
 
         if (!holding || holding.totalQty === 0) {
-          // Skip trades entered today — CNC holdings only appear after T+1 settlement.
-          // Without this guard, a same-day entry (Phase 3) would be falsely closed here.
-          if (tradeRow.entered_at) {
-            const enteredDate = new Date(tradeRow.entered_at).toDateString();
-            const today = new Date().toDateString();
-            if (enteredDate === today) continue;
-          }
-
+          // Path B: No holding — just close
           await store.pg.query(
             `UPDATE trades SET state = 'CLOSED', exited_at = NOW() WHERE id = $1`,
             [tradeRow.id],
@@ -313,6 +206,31 @@ export class TradeReconciliationService {
               `Was ENTERED locally but no Dhan holding found.\n` +
               `Marked CLOSED (likely manual exit from Dhan app).`,
           );
+        } else if (tradeRow.sell_order_id) {
+          // Path D: Holding exists but sell_order_id is set (stale sell attempt)
+          // Clear sell_order_id to allow retry, then notify user
+          await store.pg.query(
+            `UPDATE trades SET sell_order_id = NULL WHERE id = $1`,
+            [tradeRow.id],
+          );
+
+          await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
+            id: tradeRow.id,
+            action: "reconcilePositions — Path D",
+            message:
+              "ENTERED trade had stale sell_order_id. Cleared to allow retry. Notified user.",
+            symbol: tradeRow.symbol,
+            sellOrderId: tradeRow.sell_order_id,
+          });
+
+          await audit.notify(
+            `🚨 Stale Sell Cleared\n` +
+              `Symbol: ${tradeRow.symbol}\n` +
+              `Qty: ${tradeRow.quantity}\n` +
+              `Previous sell attempt (${tradeRow.sell_order_id}) failed but holding still present.\n` +
+              `sell_order_id cleared — will retry on next monitor tick.\n` +
+              `If urgent, please exit manually from Dhan app.`,
+          );
         }
       }
     } catch (err: any) {
@@ -320,6 +238,115 @@ export class TradeReconciliationService {
         action: "reconcilePositions",
         error: err?.message ?? String(err),
       });
+    }
+  }
+
+  // ─── Private Helpers ──────────────────────────────────────────────
+
+  /**
+   * S4: Find local trade matching a closed trade.
+   * Primary: match by reco_id. Fallback: match by symbol + active state.
+   */
+  private async findLocalTrade(
+    store: StateStore,
+    ct: ClosedTrade,
+  ): Promise<any | null> {
+    // Primary: match by reco_id
+    const byReco = await store.pg.query(
+      `SELECT * FROM trades WHERE reco_id = $1`,
+      [ct.id],
+    );
+    if (byReco.rows.length > 0) return byReco.rows[0];
+
+    // Fallback: match by symbol + active state
+    const symbol = String(ct.sc_symbol).toUpperCase();
+    if (!symbol) return null;
+
+    const bySymbol = await store.pg.query(
+      `SELECT * FROM trades WHERE symbol = $1 AND state IN ('AWAITING_ENTRY', 'ENTERED') LIMIT 1`,
+      [symbol],
+    );
+    return bySymbol.rows.length > 0 ? bySymbol.rows[0] : null;
+  }
+
+  /**
+   * Handle analyst closing a trade that is still AWAITING_ENTRY.
+   * Cancel the pending Forever BUY order and mark CLOSED.
+   */
+  private async handleClosedAwaitingEntry(
+    store: StateStore,
+    dhan: DhanService,
+    audit: AuditLogService,
+    tradeRow: any,
+    ct: ClosedTrade,
+  ): Promise<void> {
+    try {
+      if (tradeRow.buy_order_id) {
+        // Best-effort cancel — trade is still marked CLOSED even if this fails
+        try {
+          await dhan.cancelForeverOrder(tradeRow.buy_order_id);
+        } catch (cancelErr: any) {
+          await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
+            id: tradeRow.id,
+            action: "Cancel Forever BUY (best-effort)",
+            error: cancelErr?.message ?? String(cancelErr),
+          });
+        }
+      }
+      await store.pg.query(`UPDATE trades SET state = 'CLOSED' WHERE id = $1`, [
+        tradeRow.id,
+      ]);
+      await audit.info(LifecycleEvents.SKIP_TRADE, {
+        id: tradeRow.id,
+        recoId: ct.id,
+        message:
+          "Trade closed by analyst before entry executed. Cancelled pending Forever order.",
+      });
+
+      await audit.notify(
+        `🔄 Trade Closed (Pre-Entry)\n` +
+          `Symbol: ${tradeRow.symbol}\n` +
+          `Analyst closed before entry triggered. Pending order cancelled.`,
+      );
+    } catch (err: any) {
+      await audit.error(LifecycleEvents.ERROR_OCCURRED, {
+        id: tradeRow.id,
+        action: "Cancel pre-entry order on analyst close",
+        error: err?.message ?? String(err),
+      });
+    }
+  }
+
+  /**
+   * Handle analyst closing a trade that is ENTERED.
+   * Place Market SELL via placeSellAndClose() with atomic guard.
+   */
+  private async handleClosedEntered(
+    store: StateStore,
+    dhan: DhanService,
+    audit: AuditLogService,
+    tradeRow: any,
+    ct: ClosedTrade,
+  ): Promise<void> {
+    try {
+      const exitPrice = ct.exit_price ?? ct.cmp ?? Number(tradeRow.entry_price);
+
+      await TradeHelpers.placeSellAndClose(this.cfg, {
+        store,
+        dhan,
+        audit,
+        tradeRow,
+        exitPrice,
+        source: "processClosedTrades — analyst closed",
+        closedState: "CLOSED_BY_ANALYST",
+      });
+    } catch (err: any) {
+      const payload = TradeHelpers.buildErrorPayload(
+        String(tradeRow.id),
+        "Liquidate closed trade",
+        err,
+      );
+      await audit.critical(LifecycleEvents.ERROR_OCCURRED, payload);
     }
   }
 }

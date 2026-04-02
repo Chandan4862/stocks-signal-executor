@@ -3,11 +3,13 @@
 
   Trade scan (9:30 AM IST + /trade command):
     - Phase 2: runBuyAndInitialSl     (analyst active trades)
-    - Phase 4: processClosedTrades    (analyst closed trades)
 
-  Monitor (4x/day — 10:30, 12:00, 13:30, 15:00 IST):
+  Monitor (hourly: 10:00–15:00 IST + /monitor command):
     - Phase 3: monitorPendingEntries  (Dhan order status)
-    - Phase 5: monitorEnteredTrades   (exit order status)
+    - Phase 5: monitorEnteredTrades   (holdings-based sell)
+
+  Closed trades scan (15:00 IST):
+    - Phase 4: processClosedTrades    (analyst closed trades)
 
   Reconcile (once/day — 16:00 IST, after market close):
     - Phase 6: reconcilePositions     (safety net)
@@ -32,12 +34,30 @@ import { LifecycleEvents } from "../enums/trade";
 
 export class Scheduler {
   private tradeScanTimer: NodeJS.Timeout | null = null;
-  private monitorTimers: NodeJS.Timeout[] = [];
+  private pendingEntryTimers: NodeJS.Timeout[] = [];
+  private enteredTradeTimers: NodeJS.Timeout[] = [];
+  private closedTradesTimer: NodeJS.Timeout | null = null;
   private reconcileTimer: NodeJS.Timeout | null = null;
 
-  // 4x/day during market hours (IST: HH:MM)
-  private static readonly MONITOR_TIMES = ["10:30", "12:00", "13:30", "15:00"];
-  // Once after market close
+  // Pending entries: 10:00–14:00 (entries rarely trigger after 14:00)
+  private static readonly PENDING_ENTRY_TIMES = [
+    "10:00",
+    "11:00",
+    "12:00",
+    "13:00",
+    "14:00",
+  ];
+  // Entered trades: 11:00–15:00 (LTP needs time to settle; 15:00 is last sell window)
+  private static readonly ENTERED_TRADE_TIMES = [
+    "11:00",
+    "12:00",
+    "13:00",
+    "14:00",
+    "15:00",
+  ];
+  // Before market close (1h buffer before 15:30)
+  private static readonly CLOSED_TRADES_TIME = "14:30";
+  // After market close
   private static readonly RECONCILE_TIME = "16:00";
 
   constructor(
@@ -52,20 +72,28 @@ export class Scheduler {
   start() {
     if (this.tradeScanTimer) return;
 
-    // 1. Schedule trade scan at 9:30 AM IST
+    // 1. Schedule trade scan at 09:20 AM IST (Phase 2 only)
     this.scheduleTradeScan();
 
-    // 2. Schedule monitor ticks (Phases 3+5) 4x/day during market hours
-    this.scheduleMonitorTicks();
+    // 2. Schedule pending entry monitor (Phase 3) — 10:00–14:00
+    this.schedulePendingEntryMonitor();
 
-    // 3. Schedule reconciliation (Phase 6) once after market close
+    // 3. Schedule entered trade monitor (Phase 5) — 11:00–15:00
+    this.scheduleEnteredTradeMonitor();
+
+    // 4. Schedule closed trades scan (Phase 4) at 14:30 IST
+    this.scheduleClosedTradesScan();
+
+    // 5. Schedule reconciliation (Phase 6) once after market close
     this.scheduleReconciliation();
 
     console.log(
       `Scheduler started:\n` +
-        `  Trade scan: 09:30 IST\n` +
-        `  Monitor:    ${Scheduler.MONITOR_TIMES.join(", ")} IST\n` +
-        `  Reconcile:  ${Scheduler.RECONCILE_TIME} IST`,
+        `  Trade scan:      09:20 IST\n` +
+        `  Pending entries: ${Scheduler.PENDING_ENTRY_TIMES.join(", ")} IST\n` +
+        `  Entered trades:  ${Scheduler.ENTERED_TRADE_TIMES.join(", ")} IST\n` +
+        `  Closed trades:   ${Scheduler.CLOSED_TRADES_TIME} IST\n` +
+        `  Reconcile:       ${Scheduler.RECONCILE_TIME} IST`,
     );
   }
 
@@ -74,8 +102,14 @@ export class Scheduler {
       clearTimeout(this.tradeScanTimer);
       this.tradeScanTimer = null;
     }
-    for (const t of this.monitorTimers) clearTimeout(t);
-    this.monitorTimers = [];
+    for (const t of this.pendingEntryTimers) clearTimeout(t);
+    this.pendingEntryTimers = [];
+    for (const t of this.enteredTradeTimers) clearTimeout(t);
+    this.enteredTradeTimers = [];
+    if (this.closedTradesTimer) {
+      clearTimeout(this.closedTradesTimer);
+      this.closedTradesTimer = null;
+    }
     if (this.reconcileTimer) {
       clearTimeout(this.reconcileTimer);
       this.reconcileTimer = null;
@@ -83,12 +117,12 @@ export class Scheduler {
   }
 
   /* ------------------------------------------------------------------ */
-  /*  Trade Scan — Phases 2+4 (analyst API, runs at 9:30 AM + /trade)   */
+  /*  Trade Scan — Phase 2 (analyst active trades, runs at 9:30 AM)     */
   /* ------------------------------------------------------------------ */
 
   /**
    * Public: trigger trade scan manually (called by Telegram /trade command).
-   * Runs Phases 2 + 4 (fetch analyst trades, place orders, handle closures).
+   * Runs Phase 2 only (fetch active trades, place Forever BUY orders).
    */
   async runTradeScan(): Promise<string> {
     try {
@@ -101,11 +135,12 @@ export class Scheduler {
 
   /**
    * Public: trigger monitor manually (called by Telegram /monitor command).
-   * Runs Phases 3 + 5 (pending entries + entered trades).
+   * Runs Phases 3 + 5 (pending entries + holdings-based sell).
    */
   async runMonitor(): Promise<string> {
     try {
-      await this.executeMonitorTick();
+      await this.executePendingEntryMonitor();
+      await this.executeEnteredTradeMonitor();
       return "✅ Monitor tick completed successfully.";
     } catch (err: any) {
       return `❌ Monitor failed: ${err?.message ?? "unknown error"}`;
@@ -135,7 +170,6 @@ export class Scheduler {
           dhan,
           tradeSync,
           tradeEntry,
-          tradeReconciliation,
           qtyResolver,
           tsl,
           instrumentLookup,
@@ -154,7 +188,7 @@ export class Scheduler {
             timestamp: new Date().toISOString(),
           });
 
-          // // Phase 2: Actives — scan and place Forever Orders
+          // Phase 2: Actives — scan and place Forever Orders
           const actives = await tradeSync.fetchActiveTrades();
           await tradeEntry.runBuyAndInitialSl(
             store,
@@ -165,16 +199,6 @@ export class Scheduler {
             instrumentLookup,
             actives,
           );
-
-          // Phase 4: Handle external closures from Closed API
-          const closed = await tradeSync.fetchClosedTrades();
-
-          await tradeReconciliation.processClosedTrades(
-            store,
-            dhan,
-            audit,
-            closed,
-          );
         } finally {
           await store.disconnect();
         }
@@ -183,35 +207,34 @@ export class Scheduler {
     );
   }
 
-  /** Schedule next 9:30 AM IST run. Re-schedules itself daily. */
+  /** Schedule next 09:20 AM IST run. Re-schedules itself daily. */
   private scheduleTradeScan(): void {
-    this.tradeScanTimer = this.scheduleAtIST("09:30", async () => {
+    this.tradeScanTimer = this.scheduleAtIST("09:20", async () => {
       await this.executeTradeScan().catch(() => {});
       this.scheduleTradeScan(); // re-schedule for next day
     });
-    this.logSchedule("Trade scan", "09:30");
+    this.logSchedule("Trade scan", "09:20");
   }
 
   /* ------------------------------------------------------------------ */
-  /*  Monitor — Phases 3+5 (4x/day during market hours)                 */
+  /*  Monitor — Phase 3: Pending Entries (10:00–14:00 IST)              */
   /* ------------------------------------------------------------------ */
 
-  private scheduleMonitorTicks(): void {
-    for (const t of this.monitorTimers) clearTimeout(t);
-    this.monitorTimers = [];
+  private schedulePendingEntryMonitor(): void {
+    for (const t of this.pendingEntryTimers) clearTimeout(t);
+    this.pendingEntryTimers = [];
 
-    for (const time of Scheduler.MONITOR_TIMES) {
+    for (const time of Scheduler.PENDING_ENTRY_TIMES) {
       const timer = this.scheduleAtIST(time, async () => {
-        await this.executeMonitorTick().catch(() => {});
-        // Re-schedule all after the last one fires
-        this.scheduleMonitorTicks();
+        await this.executePendingEntryMonitor().catch(() => {});
+        this.schedulePendingEntryMonitor();
       });
-      this.monitorTimers.push(timer);
-      this.logSchedule("Monitor tick", time);
+      this.pendingEntryTimers.push(timer);
+      this.logSchedule("Pending entries", time);
     }
   }
 
-  private async executeMonitorTick(): Promise<void> {
+  private async executePendingEntryMonitor(): Promise<void> {
     await backoff(
       async () => {
         const { store, audit, tokens, dhan, tradeMonitor } =
@@ -225,16 +248,110 @@ export class Scheduler {
           }
 
           await audit.info(LifecycleEvents.DHAN_API_CALL, {
-            action: "Scheduler.monitorTick",
-            message: "Monitor tick started",
+            action: "Scheduler.pendingEntryMonitor",
+            message: "Pending entry monitor started",
             timestamp: new Date().toISOString(),
           });
 
-          // Phase 3: Monitor pending Forever Orders — attach OCO if TRADED
+          // Phase 3: Monitor pending Forever Orders — mark ENTERED if TRADED
           await tradeMonitor.monitorPendingEntries(store, dhan, audit);
+        } finally {
+          await store.disconnect();
+        }
+      },
+      { retries: 3, baseMs: 250 },
+    );
+  }
 
-          // Phase 5: Monitor ENTERED trades — detect SL/target hits, manual exits
+  /* ------------------------------------------------------------------ */
+  /*  Monitor — Phase 5: Entered Trades (11:00–15:00 IST)              */
+  /* ------------------------------------------------------------------ */
+
+  private scheduleEnteredTradeMonitor(): void {
+    for (const t of this.enteredTradeTimers) clearTimeout(t);
+    this.enteredTradeTimers = [];
+
+    for (const time of Scheduler.ENTERED_TRADE_TIMES) {
+      const timer = this.scheduleAtIST(time, async () => {
+        await this.executeEnteredTradeMonitor().catch(() => {});
+        this.scheduleEnteredTradeMonitor();
+      });
+      this.enteredTradeTimers.push(timer);
+      this.logSchedule("Entered trades", time);
+    }
+  }
+
+  private async executeEnteredTradeMonitor(): Promise<void> {
+    await backoff(
+      async () => {
+        const { store, audit, tokens, dhan, tradeMonitor } =
+          await this.initServices();
+
+        try {
+          const token = await tokens.getToken();
+          if (!token) {
+            await this.notifyNoToken(audit);
+            return;
+          }
+
+          await audit.info(LifecycleEvents.DHAN_API_CALL, {
+            action: "Scheduler.enteredTradeMonitor",
+            message: "Entered trade monitor started",
+            timestamp: new Date().toISOString(),
+          });
+
+          // Phase 5: Monitor ENTERED trades — check holdings, sell if target/SL hit
           await tradeMonitor.monitorEnteredTrades(store, dhan, audit);
+        } finally {
+          await store.disconnect();
+        }
+      },
+      { retries: 3, baseMs: 250 },
+    );
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Closed Trades — Phase 4 (14:30 IST, before market close)          */
+  /* ------------------------------------------------------------------ */
+
+  private scheduleClosedTradesScan(): void {
+    this.closedTradesTimer = this.scheduleAtIST(
+      Scheduler.CLOSED_TRADES_TIME,
+      async () => {
+        await this.executeClosedTradesScan().catch(() => {});
+        this.scheduleClosedTradesScan(); // re-schedule for next day
+      },
+    );
+    this.logSchedule("Closed trades scan", Scheduler.CLOSED_TRADES_TIME);
+  }
+
+  private async executeClosedTradesScan(): Promise<void> {
+    await backoff(
+      async () => {
+        const { store, audit, tokens, dhan, tradeSync, tradeReconciliation } =
+          await this.initServices();
+
+        try {
+          const token = await tokens.getToken();
+          if (!token) {
+            await this.notifyNoToken(audit);
+            return;
+          }
+
+          await audit.info(LifecycleEvents.DHAN_API_CALL, {
+            action: "Scheduler.closedTradesScan",
+            message: "Closed trades scan started",
+            timestamp: new Date().toISOString(),
+          });
+
+          // Phase 4: Handle external closures from Closed API
+          const closed = await tradeSync.fetchClosedTrades();
+          await tradeReconciliation.processClosedTrades(
+            store,
+            dhan,
+            audit,
+            closed,
+          );
         } finally {
           await store.disconnect();
         }
@@ -338,10 +455,7 @@ export class Scheduler {
       target = target.plus({ days: 1 });
     }
 
-    const hoursUntil = (
-      (target.toMillis() - Date.now()) /
-      3600000
-    ).toFixed(1);
+    const hoursUntil = ((target.toMillis() - Date.now()) / 3600000).toFixed(1);
     console.log(
       `  ${label} scheduled in ${hoursUntil}h (${target.toFormat("dd/MM/yyyy, hh:mm:ss a")} IST)`,
     );

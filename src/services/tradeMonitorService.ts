@@ -1,13 +1,15 @@
 /*
-  TradeMonitorService: Phase 3 + 5 — Monitor pending entries and entered trades.
+  TradeMonitorService: Monitor pending entries and entered trades.
 
-  Phase 3 (monitorPendingEntries):
+  monitorPendingEntries:
   Checks forever orders for TRIGGERED status, then looks up child orders
   in /orders via algoId to determine if entry was TRADED or REJECTED.
+  On TRADED: marks ENTERED (no OCO exit order).
 
-  Phase 5 (monitorEnteredTrades):
-  Checks exit OCO forever orders for TRIGGERED status, then looks up child
-  SELL orders to determine if exit was TRADED, REJECTED, or CANCELLED.
+  monitorEnteredTrades:
+  Checks /holdings for ENTERED trades (skips same-day entries).
+  Compares lastTradedPrice with target/sl.
+  If outside range: places Market SELL via placeSellAndClose().
 */
 
 import type { AppConfig } from "../config/schema";
@@ -20,121 +22,89 @@ import { TradeHelpers } from "./tradeHelpers";
 export class TradeMonitorService {
   constructor(private cfg: AppConfig) {}
 
-  // Phase 3: Monitor pending Forever Orders — handle TRIGGERED status
-  // ┌─────────────────────────────────────────────────────────────────┐
-  // │  monitorPendingEntries (runs on polling interval)               │
-  // │                                                                 │
-  // │  Dhan Forever Orders return: PENDING | TRIGGERED                │
-  // │  When TRIGGERED, a child regular order is created in /orders    │
-  // │  The child order has algoId = forever order's orderId           │
-  // │                                                                 │
-  // │  1. GET /forever/orders → find TRIGGERED orders                 │
-  // │  2. GET /orders → find child order by algoId                    │
-  // │     ├─ TRADED   → place OCO exit, update to ENTERED             │
-  // │     ├─ REJECTED → mark CANCELLED, notify with reason            │
-  // │     └─ PENDING  → still executing, wait                         │
-  // └─────────────────────────────────────────────────────────────────┘
+  // ┌───────────────────────────────────────────────────────────────────┐
+  // │  monitorPendingEntries (runs hourly during market hours)          │
+  // │                                                                   │
+  // │  1. GET /forever/orders → find order for each AWAITING_ENTRY      │
+  // │  2. If TRIGGERED → GET /orders → find child by algoId             │
+  // │     ├─ TRADED     → markEntered (no OCO)                          │
+  // │     ├─ REJECTED   → CANCELLED + reason                            │
+  // │     ├─ CANCELLED  → CANCELLED + reason                            │
+  // │     └─ PENDING    → wait                                          │
+  // │  3. If no forever order found → fallback: check /orders (S5)      │
+  // │  4. If CANCELLED/EXPIRED → CANCELLED                              │
+  // │  5. If PENDING → wait                                             │
+  // └───────────────────────────────────────────────────────────────────┘
   async monitorPendingEntries(
     store: StateStore,
     dhan: DhanService,
     audit: AuditLogService,
   ): Promise<void> {
     try {
-      // 1. Query Postgres for trades in AWAITING_ENTRY state
       const pendingRes = await store.pg.query(
         `SELECT * FROM trades WHERE state = 'AWAITING_ENTRY' AND buy_order_id IS NOT NULL`,
       );
       if (pendingRes.rows.length === 0) return;
 
-      // 2. Fetch forever orders and regular orders from Dhan
       const foreverOrders = await dhan.getForeverOrders();
       if (!Array.isArray(foreverOrders)) return;
       const regularOrders = await dhan.getOrders();
 
       for (const tradeRow of pendingRes.rows) {
-        // 3. Find the corresponding forever order
         const foreverOrder = TradeHelpers.findForeverOrder(
           foreverOrders,
           tradeRow.buy_order_id,
         );
 
-        if (!foreverOrder) continue;
-
-        if (foreverOrder.orderStatus === "TRIGGERED") {
-          // Forever order triggered — find the child regular order
-          // Child order's algoId = forever order's orderId
+        if (foreverOrder) {
+          // Forever order found — check its status
+          if (foreverOrder.orderStatus === "TRIGGERED") {
+            await this.handleTriggeredEntry(
+              store,
+              dhan,
+              audit,
+              tradeRow,
+              regularOrders,
+            );
+          } else if (
+            foreverOrder.orderStatus === "CANCELLED" ||
+            foreverOrder.orderStatus === "EXPIRED"
+          ) {
+            await this.markCancelled(
+              store,
+              audit,
+              tradeRow,
+              `Entry Forever Order ${foreverOrder.orderStatus}`,
+            );
+          }
+          // PENDING → trigger not yet hit, wait
+        } else {
+          // S5: No forever order found — check /orders for TRADED child (startup recovery)
+          // This catches entries that triggered while server was down and
+          // /forever/orders no longer shows TRIGGERED.
           const childOrder = TradeHelpers.findChildOrder(
             regularOrders,
             tradeRow.buy_order_id,
           );
 
-          if (!childOrder) {
-            // Child order not yet visible in /orders — wait for next tick
-            continue;
-          }
-
-          if (childOrder.orderStatus === "TRADED") {
-            // Entry confirmed! Place OCO exit.
+          if (childOrder && childOrder.orderStatus === "TRADED") {
             const tradedPrice = TradeHelpers.resolveChildPrice(
               childOrder,
               Number(tradeRow.entry_price),
             );
+            const qty = childOrder.filledQty || tradeRow.quantity;
 
-            await TradeHelpers.placeOcoExitAndEnter(this.cfg, {
+            await TradeHelpers.markEntered(
               store,
-              dhan,
               audit,
               tradeRow,
-              entryPrice: tradedPrice,
-              quantity: tradeRow.quantity,
-              source: "monitorPendingEntries",
-            });
-          } else if (childOrder.orderStatus === "REJECTED") {
-            // Child order rejected (e.g. insufficient funds)
-            const reason =
-              childOrder.omsErrorDescription || "Unknown rejection reason";
-
-            await store.pg.query(
-              `UPDATE trades SET state = 'CANCELLED' WHERE id = $1`,
-              [tradeRow.id],
-            );
-
-            await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
-              id: tradeRow.id,
-              action: "Entry child order REJECTED",
-              orderStatus: childOrder.orderStatus,
-              childOrderId: childOrder.orderId,
-              reason,
-            });
-
-            await audit.notify(
-              `⛔ Entry REJECTED\n` +
-                `Symbol: ${tradeRow.symbol}\n` +
-                `Order: ${childOrder.orderId}\n` +
-                `Reason: ${reason}`,
+              tradedPrice,
+              qty,
+              "monitorPendingEntries — S5 child order recovery",
             );
           }
-          // If child is PENDING/TRANSIT → still executing, wait for next tick
-        } else if (
-          foreverOrder.orderStatus === "CANCELLED" ||
-          foreverOrder.orderStatus === "EXPIRED"
-        ) {
-          await store.pg.query(
-            `UPDATE trades SET state = 'CANCELLED' WHERE id = $1`,
-            [tradeRow.id],
-          );
-          await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
-            id: tradeRow.id,
-            action: `Entry Forever Order ${foreverOrder.orderStatus}`,
-          });
-
-          await audit.notify(
-            `⛔ Entry ${foreverOrder.orderStatus}\n` +
-              `Symbol: ${tradeRow.symbol}\n` +
-              `Order: ${tradeRow.buy_order_id}`,
-          );
+          // else: no forever order AND no child order — might have been deleted, wait for reconciliation
         }
-        // PENDING → trigger not yet hit, wait
       }
     } catch (err: any) {
       await audit.error(LifecycleEvents.ERROR_OCCURRED, {
@@ -144,53 +114,19 @@ export class TradeMonitorService {
     }
   }
 
-  // Phase 5: Monitor ENTERED trades — check if exit OCO has triggered
   // ┌───────────────────────────────────────────────────────────────────┐
-  // │  monitorEnteredTrades (runs on polling interval)                  │
+  // │  monitorEnteredTrades (runs hourly during market hours)           │
   // │                                                                   │
-  // │  Exit orders are Forever OCO orders.                              │
-  // │  When triggered, child SELL order appears in /orders              │
-  // │  with algoId = forever exit order's orderId                       │
-  // │                                                                   │
-  // │  1. SELECT trades WHERE state = 'ENTERED'                         │
-  // │  2. Check /forever/orders for exit order status                   │
-  // │     ├─ TRIGGERED → check /orders child by algoId                  │
-  // │     │   ├─ TRADED   → CLOSED + PnL                                │
-  // │     │   └─ REJECTED → alert UNPROTECTED                           │
-  // │     ├─ CANCELLED/EXPIRED → alert UNPROTECTED                      │
-  // │     └─ PENDING → still waiting                                    │
+  // │  1. SELECT ENTERED trades, skip same-day entries (T+1)            │
+  // │  2. GET /holdings                                                 │
+  // │  3. Match by tradingSymbol                                        │
+  // │     ├─ lastTradedPrice >= target → SELL (TARGET)                  │
+  // │     ├─ lastTradedPrice <= sl     → SELL (STOPLOSS)                │
+  // │     └─ Inside range              → do nothing                     │
+  // │  4. Place Market SELL via placeSellAndClose()                      │
+  // │     ├─ Success → CLOSED + PnL                                     │
+  // │     └─ Failure → log + notify, stay ENTERED (retry next tick)     │
   // └───────────────────────────────────────────────────────────────────┘
-
-  // Trade in ENTERED state (we own the stock, OCO exit placed)
-  //   │
-  //   monitorEnteredTrades() runs hourly
-  //   │
-  //   ├── 1. Get all ENTERED trades from DB (with exit_order_id)
-  //   ├── 2. Fetch /forever/orders + /orders from Dhan
-  //   │
-  //   └── 3. For each trade, find exit forever order:
-  //         │
-  //         ├── PENDING → OCO hasn't triggered yet → do nothing, wait
-  //         │
-  //         ├── TRIGGERED → OCO fired! Check child SELL order in /orders:
-  //         │     │
-  //         │     ├── TRADED → Exit confirmed!
-  //         │     │   → UPDATE state = 'CLOSED'
-  //         │     │   → Record PnL in pnl_records
-  //         │     │   → "🟢 EXIT Triggered — Position Closed"
-  //         │     │
-  //         │     ├── REJECTED → Exit failed (e.g. insufficient qty)
-  //         │     │   → "🚨 EXIT REJECTED — Position UNPROTECTED"
-  //         │     │   → Manual action needed
-  //         │     │
-  //         │     └── PENDING/TRANSIT → still executing, wait
-  //         │
-  //         ├── CANCELLED → someone cancelled the OCO on Dhan app
-  //         │   → "🚨 EXIT ORDER CANCELLED — Position UNPROTECTED"
-  //         │
-  //         └── EXPIRED → OCO expired
-  //             → "🚨 EXIT ORDER EXPIRED — Position UNPROTECTED"
-
   async monitorEnteredTrades(
     store: StateStore,
     dhan: DhanService,
@@ -198,112 +134,52 @@ export class TradeMonitorService {
   ): Promise<void> {
     try {
       const enteredRes = await store.pg.query(
-        `SELECT * FROM trades WHERE state = 'ENTERED' AND exit_order_id IS NOT NULL`,
+        `SELECT * FROM trades WHERE state = 'ENTERED'`,
       );
       if (enteredRes.rows.length === 0) return;
 
-      // Batch fetch all orders
-      const foreverOrders = await dhan.getForeverOrders();
-      const regularOrders = await dhan.getOrders();
+      const holdings = await dhan.getHoldings();
+      if (!Array.isArray(holdings)) return;
+
+      const today = new Date().toDateString();
 
       for (const tradeRow of enteredRes.rows) {
-        // Find exit forever order
-        const exitForever = TradeHelpers.findForeverOrder(
-          foreverOrders,
-          tradeRow.exit_order_id,
+        // Skip same-day entries — CNC holdings only visible after T+1 settlement
+        if (tradeRow.entered_at) {
+          const enteredDate = new Date(tradeRow.entered_at).toDateString();
+          if (enteredDate === today) continue;
+        }
+
+        // Skip trades with sell_order_id already set (sell in progress)
+        if (tradeRow.sell_order_id) continue;
+
+        // Find matching holding by tradingSymbol
+        const holding = holdings.find(
+          (h) =>
+            String(h.tradingSymbol).toUpperCase() ===
+            String(tradeRow.symbol).toUpperCase(),
         );
 
-        if (!exitForever) {
-          // Exit order not found in forever list — might have been deleted/expired
-          continue;
-        }
+        if (!holding || holding.totalQty <= 0) continue;
 
-        if (exitForever.orderStatus === "TRIGGERED") {
-          // OCO triggered — find child SELL order
-          const childOrder = TradeHelpers.findChildOrder(
-            regularOrders,
-            tradeRow.exit_order_id,
-          );
+        const lastTradedPrice = Number(holding.lastTradedPrice);
+        if (!lastTradedPrice || lastTradedPrice <= 0) continue;
 
-          if (!childOrder) continue; // Not yet visible
+        const target = Number(tradeRow.target) || null;
+        const sl = Number(tradeRow.sl_trigger) || null;
 
-          if (childOrder.orderStatus === "TRADED") {
-            // Exit confirmed! Position closed.
-            const exitPrice = TradeHelpers.resolveChildPrice(
-              childOrder,
-              Number(tradeRow.entry_price),
-            );
+        const sellReason = TradeHelpers.shouldSell(lastTradedPrice, target, sl);
+        if (!sellReason) continue;
 
-            await store.pg.query(
-              `UPDATE trades SET state = 'CLOSED', exited_at = NOW(), exit_price = $1 WHERE id = $2`,
-              [exitPrice, tradeRow.id],
-            );
-
-            await TradeHelpers.recordPnl(store, tradeRow, exitPrice);
-
-            const entryPrice = Number(tradeRow.entry_price);
-            const pnl = (exitPrice - entryPrice) * tradeRow.quantity;
-            const pnlSign = pnl >= 0 ? "+" : "";
-            const emoji = pnl >= 0 ? "🟢" : "🔴";
-
-            await audit.info(LifecycleEvents.SELL_PLACED, {
-              id: tradeRow.id,
-              message: "Exit TRADED. Position closed.",
-              exitPrice,
-              childOrderId: childOrder.orderId,
-              pnl,
-            });
-
-            await audit.notify(
-              `${emoji} EXIT Triggered — Position Closed\n` +
-                `Symbol: ${tradeRow.symbol}\n` +
-                `Entry: ₹${entryPrice} → Exit: ₹${exitPrice}\n` +
-                `Qty: ${tradeRow.quantity} | PnL: ${pnlSign}₹${pnl.toFixed(2)}`,
-            );
-          } else if (childOrder.orderStatus === "REJECTED") {
-            // Exit rejected — position UNPROTECTED
-            const reason =
-              childOrder.omsErrorDescription || "Unknown rejection reason";
-
-            await audit.critical(LifecycleEvents.ERROR_OCCURRED, {
-              id: tradeRow.id,
-              action: "monitorEnteredTrades",
-              error: `Exit child order REJECTED — position UNPROTECTED!`,
-              exitOrderId: tradeRow.exit_order_id,
-              childOrderId: childOrder.orderId,
-              symbol: tradeRow.symbol,
-              reason,
-            });
-
-            await audit.notify(
-              `🚨 EXIT REJECTED — Position UNPROTECTED\n` +
-                `Symbol: ${tradeRow.symbol}\n` +
-                `Qty: ${tradeRow.quantity}\n` +
-                `Reason: ${reason}\n` +
-                `Manual action required.`,
-            );
-          }
-        } else if (
-          exitForever.orderStatus === "CANCELLED" ||
-          exitForever.orderStatus === "EXPIRED"
-        ) {
-          // Exit order cancelled/expired — position UNPROTECTED
-          await audit.critical(LifecycleEvents.ERROR_OCCURRED, {
-            id: tradeRow.id,
-            action: "monitorEnteredTrades",
-            error: `Exit forever order ${exitForever.orderStatus} — position UNPROTECTED!`,
-            exitOrderId: tradeRow.exit_order_id,
-            symbol: tradeRow.symbol,
-          });
-
-          await audit.notify(
-            `🚨 EXIT ORDER ${exitForever.orderStatus}\n` +
-              `Symbol: ${tradeRow.symbol}\n` +
-              `Qty: ${tradeRow.quantity} — Position UNPROTECTED!\n` +
-              `Manual action required.`,
-          );
-        }
-        // PENDING → OCO not yet triggered, wait
+        // Price outside range — place Market SELL
+        await TradeHelpers.placeSellAndClose(this.cfg, {
+          store,
+          dhan,
+          audit,
+          tradeRow,
+          exitPrice: lastTradedPrice,
+          source: `monitorEnteredTrades — ${sellReason}`,
+        });
       }
     } catch (err: any) {
       await audit.error(LifecycleEvents.ERROR_OCCURRED, {
@@ -311,5 +187,82 @@ export class TradeMonitorService {
         error: err?.message ?? String(err),
       });
     }
+  }
+
+  // ─── Private Helpers ──────────────────────────────────────────────
+
+  /**
+   * Handle a TRIGGERED forever entry: look up child order, act on status.
+   */
+  private async handleTriggeredEntry(
+    store: StateStore,
+    dhan: DhanService,
+    audit: AuditLogService,
+    tradeRow: any,
+    regularOrders: any[],
+  ): Promise<void> {
+    const childOrder = TradeHelpers.findChildOrder(
+      regularOrders,
+      tradeRow.buy_order_id,
+    );
+
+    if (!childOrder) {
+      // Child order not yet visible in /orders — wait for next tick
+      return;
+    }
+
+    if (childOrder.orderStatus === "TRADED") {
+      const tradedPrice = TradeHelpers.resolveChildPrice(
+        childOrder,
+        Number(tradeRow.entry_price),
+      );
+      const qty = childOrder.filledQty || tradeRow.quantity;
+
+      await TradeHelpers.markEntered(
+        store,
+        audit,
+        tradeRow,
+        tradedPrice,
+        qty,
+        "monitorPendingEntries",
+      );
+    } else if (
+      childOrder.orderStatus === "REJECTED" ||
+      childOrder.orderStatus === "CANCELLED"
+    ) {
+      const reason =
+        childOrder.omsErrorDescription ||
+        `Child order ${childOrder.orderStatus}`;
+
+      await this.markCancelled(store, audit, tradeRow, reason);
+    }
+    // PENDING/TRANSIT → still executing, wait
+  }
+
+  /**
+   * Mark a trade as CANCELLED with a reason notification.
+   */
+  private async markCancelled(
+    store: StateStore,
+    audit: AuditLogService,
+    tradeRow: any,
+    reason: string,
+  ): Promise<void> {
+    await store.pg.query(
+      `UPDATE trades SET state = 'CANCELLED' WHERE id = $1`,
+      [tradeRow.id],
+    );
+
+    await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
+      id: tradeRow.id,
+      action: "monitorPendingEntries",
+      reason,
+    });
+
+    await audit.notify(
+      `⛔ Entry CANCELLED\n` +
+        `Symbol: ${tradeRow.symbol}\n` +
+        `Reason: ${reason}`,
+    );
   }
 }
