@@ -137,7 +137,7 @@ export class TradeEntryService {
   ): Promise<ValidatedTrade | null> {
     const id = at.id;
     const symbol = String(at.sc_symbol || "").toUpperCase();
-    const activeStates = ["AWAITING_ENTRY", "ENTERED"];
+    const activeStates = ["ENTERED"];
 
     // ── Guard 1: Max active trade count ──────────────────────────────
     try {

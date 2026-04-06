@@ -165,6 +165,12 @@ export class TradeMonitorService {
         const lastTradedPrice = Number(holding.lastTradedPrice);
         if (!lastTradedPrice || lastTradedPrice <= 0) continue;
 
+        // Persist LTP on every tick for live tracking
+        await store.pg.query(
+          `UPDATE trades SET ltp = $1 WHERE id = $2`,
+          [lastTradedPrice, tradeRow.id],
+        );
+
         const target = Number(tradeRow.target) || null;
         const sl = Number(tradeRow.sl_trigger) || null;
 

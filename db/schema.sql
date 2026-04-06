@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS trades (
   entered_at TIMESTAMPTZ,
   exited_at TIMESTAMPTZ,
   exit_price NUMERIC(12,2),
+  ltp NUMERIC(12,2),
   processed_at TIMESTAMPTZ DEFAULT NOW()
 );
 
