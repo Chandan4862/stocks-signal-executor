@@ -18,6 +18,7 @@ import { QuantityResolverService } from "./quantityResolverService";
 import { TSLService } from "./tslService";
 import { AuditLogService } from "./auditLogService";
 import { InstrumentLookupService } from "./instrumentLookupService";
+import { ConfigService } from "./configService";
 import { InstrumentType, LifecycleEvents } from "../enums/trade";
 
 export class TradeEntryService {
@@ -32,6 +33,7 @@ export class TradeEntryService {
     audit: AuditLogService,
     instrumentLookup: InstrumentLookupService,
     actives: ActiveTrade[],
+    configSvc: ConfigService,
   ): Promise<void> {
     for (const at of actives) {
       // Only process cash instruments
@@ -66,6 +68,7 @@ export class TradeEntryService {
           tslService,
           audit,
           instrumentLookup,
+          configSvc,
         );
         if (!validated) {
           await this.logRecoScan(store, at, "SKIPPED", "Validation failed");
@@ -130,6 +133,7 @@ export class TradeEntryService {
     tslService: TSLService,
     audit: AuditLogService,
     instrumentLookup: InstrumentLookupService,
+    configSvc: ConfigService,
   ): Promise<ValidatedTrade | null> {
     const id = at.id;
     const symbol = String(at.sc_symbol || "").toUpperCase();
@@ -142,12 +146,12 @@ export class TradeEntryService {
         [activeStates],
       );
       const activeCount = Number(countRes.rows?.[0]?.cnt ?? 0);
-      if (activeCount >= this.cfg.maxActiveTrades) {
+      if (activeCount >= configSvc.maxActiveTrades) {
         await audit.warn(LifecycleEvents.SKIP_TRADE, {
           id,
           reason: "Max active trade limit reached",
           activeCount,
-          maxActiveTrades: this.cfg.maxActiveTrades,
+          maxActiveTrades: configSvc.maxActiveTrades,
         });
         return null;
       }
@@ -199,7 +203,7 @@ export class TradeEntryService {
 
     // ── Resolve capital & quantity ───────────────────────────────────
     const perTradeCapital =
-      (at as any)?.meta?.max_capital ?? this.cfg.perTradeCapital;
+      (at as any)?.meta?.max_capital ?? configSvc.perTradeCapital;
     const qty = qtyResolver.deriveQty(entryPrice, Number(perTradeCapital));
     if (!qty || qty <= 0) {
       audit.record(LifecycleEvents.ERROR_OCCURRED, {
@@ -220,13 +224,13 @@ export class TradeEntryService {
         [activeStates],
       );
       const deployedCapital = Number(capRes.rows?.[0]?.deployed ?? 0);
-      if (deployedCapital + newTradeCapital > this.cfg.maxTradeCapital) {
+      if (deployedCapital + newTradeCapital > configSvc.maxTradeCapital) {
         await audit.warn(LifecycleEvents.SKIP_TRADE, {
           id,
           reason: "Max deployed capital would be exceeded",
           deployedCapital,
           newTradeCapital,
-          maxTradeCapital: this.cfg.maxTradeCapital,
+          maxTradeCapital: configSvc.maxTradeCapital,
         });
         return null;
       }

@@ -19,6 +19,7 @@
 import { Telegraf } from "telegraf";
 import { TokenService, DhanProfile } from "./tokenService";
 import { AuditLogService } from "./auditLogService";
+import { ConfigService } from "./configService";
 import { LifecycleEvents } from "../enums/trade";
 import type { Scheduler } from "./scheduler";
 
@@ -28,6 +29,7 @@ export class TelegramService {
   private tokenService?: TokenService;
   private audit?: AuditLogService;
   private scheduler?: Scheduler;
+  private configService?: ConfigService;
 
   constructor(
     private botToken: string,
@@ -60,6 +62,13 @@ export class TelegramService {
    */
   setScheduler(scheduler: Scheduler): void {
     this.scheduler = scheduler;
+  }
+
+  /**
+   * Inject ConfigService for /config command.
+   */
+  setConfigService(configSvc: ConfigService): void {
+    this.configService = configSvc;
   }
 
   /* ------------------------------------------------------------------ */
@@ -362,6 +371,36 @@ export class TelegramService {
         this.logWarn("/reconcile", "Reconciliation error", err);
         ctx.reply(`❌ Reconciliation error: ${err?.message ?? "unknown"}`);
       }
+    });
+
+    // /config — view or update runtime trading configuration
+    this.bot.command("config", async (ctx) => {
+      if (!this.configService) {
+        ctx.reply("⚠️ ConfigService not initialized yet. Try again later.");
+        return;
+      }
+
+      const args = ctx.message.text.split(/\s+/).slice(1);
+
+      // /config — show all config
+      if (args.length === 0) {
+        ctx.reply(this.configService.getAll());
+        return;
+      }
+
+      // /config <key> <value> — update a value
+      if (args.length === 2) {
+        const [key, value] = args;
+        const result = await this.configService.set(key, value);
+        ctx.reply(result.message);
+        return;
+      }
+
+      ctx.reply(
+        "Usage:\n" +
+          "  /config — show all values\n" +
+          "  /config <key> <value> — update a value",
+      );
     });
 
     // Silently ignore all unrecognised messages — no reply to unauthorized users

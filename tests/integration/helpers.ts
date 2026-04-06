@@ -22,7 +22,6 @@ import {
 export const TEST_DB = "stocks_executor_test";
 
 export const cfg: AppConfig = {
-  kite: {},
   dhan: { clientId: "TEST_CLIENT" },
   apis: {
     activeTradesUrl: "http://mock/active",
@@ -36,13 +35,7 @@ export const cfg: AppConfig = {
     password: process.env.PG_PASSWORD || "postgres",
   },
   telegram: { botToken: "fake", defaultChatId: "fake" },
-  pollingIntervalMs: 1000,
-  maxTradeCapital: 100000,
-  perTradeCapital: 10000,
-  maxActiveTrades: 10,
-  useSuperOrder: false,
   env: "test",
-  tsl: { incrementRs: 2, initialSlPct: 3, trailingStepPct: 1 },
 } as any;
 
 // ─── Mock DhanService ───────────────────────────────────────────────────────
@@ -190,6 +183,7 @@ export async function cleanTables(store: StateStore) {
   await store.pg.query("DELETE FROM audit_logs");
   await store.pg.query("DELETE FROM idempotency");
   await store.pg.query("DELETE FROM trades");
+  await store.pg.query("DELETE FROM app_config");
 }
 
 export async function getTradeState(store: StateStore, id: number) {

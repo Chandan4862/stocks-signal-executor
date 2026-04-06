@@ -1,20 +1,13 @@
 import { AppConfig, AppConfigSchema } from "./schema";
 
+/**
+ * Load infrastructure config from environment variables.
+ * Trading params (capital, TSL, etc.) are loaded from DB via ConfigService.
+ */
 export function loadConfig(): AppConfig {
   const env = process.env;
-  const bool = (v: any, def: boolean) => {
-    if (v === undefined || v === null || v === "") return def;
-    const s = String(v).toLowerCase();
-    return s === "1" || s === "true" || s === "yes";
-  };
+
   const parseResult = AppConfigSchema.safeParse({
-    kite: {
-      userId: env.KITE_USER_ID,
-      password: env.KITE_PASSWORD,
-      totpSecret: env.KITE_TOTP_SECRET,
-      refreshWindowStart: env.SESSION_REFRESH_WINDOW_START,
-      refreshWindowEnd: env.SESSION_REFRESH_WINDOW_END,
-    },
     dhan: {
       clientId: env.DHAN_CLIENT_ID,
       pin: env.DHAN_PIN || undefined,
@@ -36,18 +29,8 @@ export function loadConfig(): AppConfig {
       defaultChatId: env.TELEGRAM_CHAT_ID,
       tradesChatId: env.TELEGRAM_TRADES_CHAT_ID || undefined,
     },
-    pollingIntervalMs: Number(env.POLLING_INTERVAL_MS || 3600000),
-    maxTradeCapital: Number(env.MAX_TRADE_CAPITAL || 10000),
-    perTradeCapital: Number(env.PER_TRADE_CAPITAL || 10000),
-    maxActiveTrades: Number(env.MAX_ACTIVE_TRADES || 10),
-    useSuperOrder: bool(env.USE_SUPER_ORDER, true),
     postbackPort: env.POSTBACK_PORT ? Number(env.POSTBACK_PORT) : undefined,
     env: (env.NODE_ENV as any) || "development",
-    tsl: {
-      incrementRs: Number(env.TSL_INCREMENT_RS || 2),
-      initialSlPct: Number(env.TSL_INITIAL_SL_PCT || 3),
-      trailingStepPct: Number(env.TSL_TRAILING_STEP_PCT || 1),
-    },
   });
 
   if (!parseResult.success) {

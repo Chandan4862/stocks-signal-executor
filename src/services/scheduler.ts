@@ -29,6 +29,7 @@ import { QuantityResolverService } from "./quantityResolverService";
 import { TSLService } from "./tslService";
 import { AuditLogService } from "./auditLogService";
 import { InstrumentLookupService } from "./instrumentLookupService";
+import { ConfigService } from "./configService";
 import { TelegramService } from "./telegramService";
 import { LifecycleEvents } from "../enums/trade";
 
@@ -63,6 +64,7 @@ export class Scheduler {
   constructor(
     private cfg: AppConfig,
     private telegram: TelegramService,
+    private configSvc: ConfigService,
   ) {}
 
   /* ------------------------------------------------------------------ */
@@ -168,6 +170,7 @@ export class Scheduler {
           audit,
           tokens,
           dhan,
+          configSvc,
           tradeSync,
           tradeEntry,
           qtyResolver,
@@ -198,6 +201,7 @@ export class Scheduler {
             audit,
             instrumentLookup,
             actives,
+            configSvc,
           );
         } finally {
           await store.disconnect();
@@ -472,11 +476,6 @@ export class Scheduler {
     const tradeMonitor = new TradeMonitorService(this.cfg);
     const tradeReconciliation = new TradeReconciliationService(this.cfg);
     const qtyResolver = new QuantityResolverService();
-    const tsl = new TSLService({
-      incrementRs: this.cfg.tsl.incrementRs,
-      initialSlPct: this.cfg.tsl.initialSlPct,
-      trailingStepPct: this.cfg.tsl.trailingStepPct,
-    });
 
     // Create audit early (Telegram-only until PG connects)
     let audit = new AuditLogService(null, this.telegram);
@@ -492,6 +491,12 @@ export class Scheduler {
       });
       throw err;
     }
+
+    // Reload runtime trading config from DB (picks up any /config changes)
+    await this.configSvc.load();
+
+    // TSL uses DB-backed config values (freshly loaded)
+    const tsl = new TSLService(this.configSvc.tsl);
 
     // Upgrade audit with PG client now that connection is live
     audit = new AuditLogService(store.pg, this.telegram);
@@ -509,6 +514,7 @@ export class Scheduler {
       audit,
       tokens,
       dhan,
+      configSvc: this.configSvc,
       tradeSync,
       tradeEntry,
       tradeMonitor,
