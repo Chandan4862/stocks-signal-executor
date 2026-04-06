@@ -19,7 +19,7 @@ import { TSLService } from "./tslService";
 import { AuditLogService } from "./auditLogService";
 import { InstrumentLookupService } from "./instrumentLookupService";
 import { ConfigService } from "./configService";
-import { InstrumentType, LifecycleEvents } from "../enums/trade";
+import { InstrumentType, LifecycleEvents, TradeState } from "../enums/trade";
 
 export class TradeEntryService {
   constructor(private cfg: AppConfig) {}
@@ -137,7 +137,7 @@ export class TradeEntryService {
   ): Promise<ValidatedTrade | null> {
     const id = at.id;
     const symbol = String(at.sc_symbol || "").toUpperCase();
-    const activeStates = ["ENTERED"];
+    const activeStates = [TradeState.ENTERED, TradeState.AWAITING_ENTRY];
 
     // ── Guard 1: Max active trade count ──────────────────────────────
     try {
@@ -336,16 +336,16 @@ export class TradeEntryService {
     await store.pg.query(
       `INSERT INTO trades (id, tradingsymbol, exchange, reco_type, entry_price, quantity, state,
                            security_id, symbol, buy_order_id, target, sl_trigger, capital, reco_id)
-       VALUES ($1, $2, 'NSE', 'buy', $3, $4, 'AWAITING_ENTRY', $5, $6, $7, $8, $9, $10, $11)
+       VALUES ($1, $2, 'NSE', 'buy', $3, $4, '${TradeState.AWAITING_ENTRY}', $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT (id) DO UPDATE SET
-         state = 'AWAITING_ENTRY',
+         state = '${TradeState.AWAITING_ENTRY}',
          buy_order_id = EXCLUDED.buy_order_id,
          security_id = EXCLUDED.security_id,
          target = EXCLUDED.target,
          sl_trigger = EXCLUDED.sl_trigger,
          capital = EXCLUDED.capital,
          reco_id = EXCLUDED.reco_id
-       WHERE trades.state NOT IN ('ENTERED', 'CLOSED', 'CLOSED_BY_ANALYST')`,
+       WHERE trades.state NOT IN ('${TradeState.ENTERED}', '${TradeState.CLOSED}', '${TradeState.CLOSED_BY_ANALYST}')`,
       [
         v.id,
         v.symbol,

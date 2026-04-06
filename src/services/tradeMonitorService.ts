@@ -16,7 +16,7 @@ import type { AppConfig } from "../config/schema";
 import { DhanService, DhanApiError } from "./dhanService";
 import { StateStore } from "./stateStore";
 import { AuditLogService } from "./auditLogService";
-import { LifecycleEvents } from "../enums/trade";
+import { LifecycleEvents, TradeState } from "../enums/trade";
 import { TradeHelpers } from "./tradeHelpers";
 
 export class TradeMonitorService {
@@ -42,7 +42,7 @@ export class TradeMonitorService {
   ): Promise<void> {
     try {
       const pendingRes = await store.pg.query(
-        `SELECT * FROM trades WHERE state = 'AWAITING_ENTRY' AND buy_order_id IS NOT NULL`,
+        `SELECT * FROM trades WHERE state = '${TradeState.AWAITING_ENTRY}' AND buy_order_id IS NOT NULL`,
       );
       if (pendingRes.rows.length === 0) return;
 
@@ -134,7 +134,7 @@ export class TradeMonitorService {
   ): Promise<void> {
     try {
       const enteredRes = await store.pg.query(
-        `SELECT * FROM trades WHERE state = 'ENTERED'`,
+        `SELECT * FROM trades WHERE state = '${TradeState.ENTERED}'`,
       );
       if (enteredRes.rows.length === 0) return;
 
@@ -255,7 +255,7 @@ export class TradeMonitorService {
     reason: string,
   ): Promise<void> {
     await store.pg.query(
-      `UPDATE trades SET state = 'CANCELLED' WHERE id = $1`,
+      `UPDATE trades SET state = '${TradeState.CANCELLED}' WHERE id = $1`,
       [tradeRow.id],
     );
 
