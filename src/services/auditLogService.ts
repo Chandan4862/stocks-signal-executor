@@ -173,11 +173,60 @@ export class AuditLogService {
     event: string,
     payload: Record<string, any>,
   ): string {
-    const tradeId = payload.id ? `Trade #${payload.id}` : "";
-    const errorMsg = payload.error || payload.message || payload.reason || "";
-    const lines = [`${emoji} ${label}: ${event}`, tradeId, errorMsg].filter(
-      Boolean,
-    );
+    const lines: string[] = [];
+
+    // Header
+    lines.push(`${emoji} ${label}: ${event}`);
+
+    // Trade ID
+    if (payload.id) lines.push(`📋 Trade: #${payload.id}`);
+
+    // Action / source (which code path triggered this)
+    if (payload.action) lines.push(`📍 Action: ${payload.action}`);
+
+    // Error message
+    const errorMsg = payload.error || payload.message || payload.reason;
+    if (errorMsg) lines.push(`💬 ${errorMsg}`);
+
+    // HTTP details
+    if (payload.httpStatus) lines.push(`🌐 HTTP ${payload.httpStatus}`);
+
+    // Dhan-specific error code + message
+    if (payload.dhanErrorCode) {
+      const dhanLine = payload.dhanMessage
+        ? `⚡ ${payload.dhanErrorCode}: ${payload.dhanMessage}`
+        : `⚡ ${payload.dhanErrorCode}`;
+      lines.push(dhanLine);
+    } else if (payload.dhanMessage) {
+      lines.push(`⚡ Dhan: ${payload.dhanMessage}`);
+    }
+
+    // Request URL (from interceptor-logged calls)
+    if (payload.url) lines.push(`🔗 URL: ${payload.url}`);
+    if (payload.method) lines.push(`📤 Method: ${payload.method}`);
+
+    // Truncated request body (useful for debugging what was sent)
+    if (payload.requestBody) {
+      const body = this.truncateJson(payload.requestBody, 300);
+      lines.push(`📦 Request: ${body}`);
+    }
+
+    // Truncated response body (useful for debugging what came back)
+    if (payload.responseBody) {
+      const body = this.truncateJson(payload.responseBody, 300);
+      lines.push(`📥 Response: ${body}`);
+    }
+
     return lines.join("\n");
+  }
+
+  /** Truncate a JSON-serializable value to maxLen characters for Telegram readability. */
+  private truncateJson(value: any, maxLen: number): string {
+    try {
+      const str = typeof value === "string" ? value : JSON.stringify(value);
+      return str.length > maxLen ? str.slice(0, maxLen) + "…" : str;
+    } catch {
+      return String(value).slice(0, maxLen);
+    }
   }
 }

@@ -121,11 +121,17 @@ export class TokenService {
     const generated = await this.generateViaTotp();
     if (generated) return generated;
 
-    // 5. No token available
+    // 5. No token available — summarize what was tried
+    const tried: string[] = [];
+    if (this.cachedToken) tried.push("in-memory (expired)");
+    if (dbRow) tried.push("DB token (invalid/expired)");
+    if (this.cfg.dhan.pin && this.cfg.dhan.totpSecret) tried.push("TOTP auto-gen (failed)");
+    else tried.push("TOTP (not configured)");
+
     await this.audit.critical(LifecycleEvents.ERROR_OCCURRED, {
-      action: "getToken",
-      error:
-        "No valid token found. Submit via Telegram /token or configure TOTP.",
+      action: "TokenService.getToken",
+      error: "No valid token — all sources exhausted",
+      message: `Tried: ${tried.join(" → ")}. Submit via /token or fix TOTP config.`,
     });
     return null;
   }
@@ -268,7 +274,8 @@ export class TokenService {
       return data.accessToken;
     } catch (err: any) {
       await this.audit.error(LifecycleEvents.ERROR_OCCURRED, {
-        action: "renewToken",
+        action: "TokenService.renewToken",
+        url: `GET ${DHAN_API_BASE}/RenewToken`,
         ...this.extractDhanError(err),
       });
       return null;
@@ -291,7 +298,13 @@ export class TokenService {
     const totpSecret = this.cfg.dhan.totpSecret;
 
     if (!pin || !totpSecret) {
-      return null; // TOTP credentials not configured — skip silently
+      this.audit
+        .info(LifecycleEvents.TOKEN_REFRESHED, {
+          action: "TokenService.generateViaTotp",
+          message: `TOTP skipped: ${!pin ? "DHAN_PIN missing" : "DHAN_TOTP_SECRET missing"}`,
+        })
+        .catch(() => {});
+      return null;
     }
 
     try {
@@ -330,7 +343,13 @@ export class TokenService {
       return data.accessToken;
     } catch (err: any) {
       await this.audit.error(LifecycleEvents.ERROR_OCCURRED, {
-        action: "generateViaTotp",
+        action: "TokenService.generateViaTotp",
+        url: `POST ${DHAN_AUTH_BASE}/app/generateAccessToken`,
+        requestBody: {
+          dhanClientId: this.cfg.dhan.clientId,
+          pin: "***",
+          totp: "(generated)",
+        },
         ...this.extractDhanError(err),
       });
       return null;
@@ -356,15 +375,17 @@ export class TokenService {
       if (status === 401 || status === 403) {
         this.audit
           .warn(LifecycleEvents.ERROR_OCCURRED, {
-            action: "fetchProfile",
-            error: "Token validation failed (unauthorized)",
+            action: "TokenService.fetchProfile",
+            error: `Token validation failed — Dhan profile returned ${status}`,
             httpStatus: status,
+            url: `GET ${DHAN_API_BASE}/profile`,
+            responseBody: err?.response?.data,
           })
           .catch(() => {});
       } else {
         this.audit
           .warn(LifecycleEvents.ERROR_OCCURRED, {
-            action: "fetchProfile",
+            action: "TokenService.fetchProfile",
             ...this.extractDhanError(err),
           })
           .catch(() => {});
@@ -396,9 +417,17 @@ export class TokenService {
   private extractDhanError(err: any): Record<string, any> {
     const status = err?.response?.status;
     const body = err?.response?.data;
+    const url =
+      err?.config?.url ??
+      err?.response?.config?.url ??
+      err?.request?.path ??
+      undefined;
+    const method = (err?.config?.method ?? err?.response?.config?.method ?? "")
+      .toUpperCase();
     return {
       error: err?.message ?? String(err),
       httpStatus: status,
+      url: url ? `${method} ${url}` : undefined,
       dhanErrorCode: body?.errorCode ?? body?.internalErrorCode ?? undefined,
       dhanMessage:
         body?.errorMessage ??
