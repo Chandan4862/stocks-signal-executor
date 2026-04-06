@@ -19,6 +19,7 @@ import { TradeReconciliationService } from "../../src/services/tradeReconciliati
 import { QuantityResolverService } from "../../src/services/quantityResolverService";
 import { TSLService } from "../../src/services/tslService";
 import { InstrumentLookupService } from "../../src/services/instrumentLookupService";
+import { ConfigService } from "../../src/services/configService";
 import {
   cfg,
   MockDhanService,
@@ -40,6 +41,7 @@ describe("State Machine Integration", () => {
   let qtyResolver: QuantityResolverService;
   let tsl: TSLService;
   let instrumentLookup: InstrumentLookupService;
+  let configSvc: ConfigService;
 
   beforeAll(async () => {
     await createTestDb();
@@ -51,11 +53,9 @@ describe("State Machine Integration", () => {
     tradeMonitor = new TradeMonitorService(cfg);
     tradeReconciliation = new TradeReconciliationService(cfg);
     qtyResolver = new QuantityResolverService();
-    tsl = new TSLService({
-      incrementRs: cfg.tsl.incrementRs,
-      initialSlPct: cfg.tsl.initialSlPct,
-      trailingStepPct: cfg.tsl.trailingStepPct,
-    });
+    configSvc = new ConfigService(store.pg);
+    await configSvc.load();
+    tsl = new TSLService(configSvc.tsl);
     instrumentLookup = new InstrumentLookupService(store.pg);
   }, 30000);
 
@@ -106,6 +106,7 @@ describe("State Machine Integration", () => {
       audit,
       instrumentLookup,
       activeTrades as any,
+      configSvc,
     );
 
     let trade = await getTradeState(store, 5001);
@@ -324,6 +325,7 @@ describe("State Machine Integration", () => {
       audit,
       instrumentLookup,
       activeTrades as any,
+      configSvc,
     );
 
     const trade = await getTradeState(store, 5005);

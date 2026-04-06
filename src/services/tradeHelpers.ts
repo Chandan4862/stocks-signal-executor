@@ -8,7 +8,7 @@ import type { AppConfig } from "../config/schema";
 import { DhanService, DhanApiError, PlaceOrderRequest } from "./dhanService";
 import { StateStore } from "./stateStore";
 import { AuditLogService } from "./auditLogService";
-import { LifecycleEvents } from "../enums/trade";
+import { LifecycleEvents, TradeState } from "../enums/trade";
 
 /**
  * Options for placing a sell order and closing a trade.
@@ -44,11 +44,11 @@ export class TradeHelpers {
   ): Promise<boolean> {
     const res = await store.pg.query(
       `UPDATE trades
-       SET state = 'ENTERED',
+       SET state = '${TradeState.ENTERED}',
            entered_at = NOW(),
            entry_price = $1,
            quantity = $2
-       WHERE id = $3 AND state = 'AWAITING_ENTRY'
+       WHERE id = $3 AND state = '${TradeState.AWAITING_ENTRY}'
        RETURNING id`,
       [entryPrice, quantity, tradeRow.id],
     );
@@ -108,7 +108,7 @@ export class TradeHelpers {
     opts: SellAndCloseOptions,
   ): Promise<{ success: boolean; orderId?: string; error?: string }> {
     const { store, dhan, audit, tradeRow, exitPrice, source } = opts;
-    const closedState = opts.closedState ?? "CLOSED";
+    const closedState = opts.closedState ?? TradeState.CLOSED;
 
     // S1: Atomic sell guard — prevent duplicate sells
     const pendingId = `pending_${tradeRow.id}`;

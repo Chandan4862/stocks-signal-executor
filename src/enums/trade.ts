@@ -1,10 +1,9 @@
 export enum TradeState {
-  NEW = "NEW", // discovered active recommendation, not yet entered
-  ENTERED = "ENTERED", // buy executed
-  EXITED = "EXITED", // sell executed
-  CANCELLED = "CANCELLED", // invalidated or cancelled before entry
-  AWAITING_ENTRY = "AWAITING_ENTRY", // buy executed, waiting for exit
-  CLOSED_BY_ANALYST = "CLOSED_BY_ANALYST", // closed by analyst
+  AWAITING_ENTRY = "AWAITING_ENTRY",
+  ENTERED = "ENTERED",
+  CLOSED = "CLOSED",
+  CLOSED_BY_ANALYST = "CLOSED_BY_ANALYST",
+  CANCELLED = "CANCELLED",
 }
 
 export enum OrderState {

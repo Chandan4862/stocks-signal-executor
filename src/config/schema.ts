@@ -1,21 +1,10 @@
 import { z } from "zod";
 
-export const TslConfigSchema = z.object({
-  incrementRs: z.number().positive(),
-  initialSlPct: z.number().positive(),
-  trailingStepPct: z.number().positive(),
-});
-
+/**
+ * AppConfig: Infrastructure & secrets only.
+ * Trading parameters (capital, TSL, etc.) are managed via ConfigService (DB-backed).
+ */
 export const AppConfigSchema = z.object({
-  kite: z
-    .object({
-      userId: z.string().min(3),
-      password: z.string().min(1),
-      totpSecret: z.string().min(16),
-      refreshWindowStart: z.string().regex(/^\d{2}:\d{2}$/),
-      refreshWindowEnd: z.string().regex(/^\d{2}:\d{2}$/),
-    })
-    .partial(),
   dhan: z.object({
     clientId: z.string().min(3),
     pin: z.string().optional(), // Login PIN — required for TOTP-based token generation
@@ -37,14 +26,8 @@ export const AppConfigSchema = z.object({
     defaultChatId: z.string().min(1),
     tradesChatId: z.string().optional(),
   }),
-  pollingIntervalMs: z.number().int().positive(),
-  maxTradeCapital: z.number().positive(),
-  perTradeCapital: z.number().positive(),
-  maxActiveTrades: z.number().int().positive(),
-  useSuperOrder: z.boolean(),
   postbackPort: z.number().int().positive().optional(),
   env: z.enum(["development", "production", "test"]).default("development"),
-  tsl: TslConfigSchema,
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;

@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS trades (
   entered_at TIMESTAMPTZ,
   exited_at TIMESTAMPTZ,
   exit_price NUMERIC(12,2),
+  ltp NUMERIC(12,2),
   processed_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -85,3 +86,19 @@ CREATE TABLE IF NOT EXISTS postback_log (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_postback_order_id ON postback_log (order_id);
+
+CREATE TABLE IF NOT EXISTS app_config (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Seed with defaults
+INSERT INTO app_config (key, value) VALUES
+  ('max_trade_capital',   '25000'),
+  ('per_trade_capital',   '2000'),
+  ('max_active_trades',   '10'),
+  ('tsl_increment_rs',    '2'),
+  ('tsl_initial_sl_pct',  '3'),
+  ('tsl_trailing_step_pct', '1')
+ON CONFLICT (key) DO NOTHING;

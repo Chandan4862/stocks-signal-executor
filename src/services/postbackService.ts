@@ -16,7 +16,7 @@
 import http from "http";
 import type { Client } from "pg";
 import { AuditLogService } from "./auditLogService";
-import { LifecycleEvents } from "../enums/trade";
+import { LifecycleEvents, TradeState } from "../enums/trade";
 
 export interface PostbackPayload {
   dhanClientId: string;
@@ -194,7 +194,7 @@ export class PostbackService {
   ): Promise<void> {
     const { orderId, orderStatus, price } = payload;
 
-    if (trade.state !== "AWAITING_ENTRY") return;
+    if (trade.state !== TradeState.AWAITING_ENTRY) return;
 
     if (orderStatus === "TRADED") {
       // Entry triggered! Update to ENTERED.
@@ -204,7 +204,7 @@ export class PostbackService {
       const tradedPrice = price > 0 ? price : Number(trade.entry_price);
 
       await this.pg.query(
-        `UPDATE trades SET entry_price = $1 WHERE id = $2 AND state = 'AWAITING_ENTRY'`,
+        `UPDATE trades SET entry_price = $1 WHERE id = $2 AND state = '${TradeState.AWAITING_ENTRY}'`,
         [tradedPrice, trade.id],
       );
 
@@ -225,7 +225,7 @@ export class PostbackService {
       );
     } else if (["CANCELLED", "REJECTED", "EXPIRED"].includes(orderStatus)) {
       await this.pg.query(
-        `UPDATE trades SET state = 'CANCELLED' WHERE id = $1`,
+        `UPDATE trades SET state = '${TradeState.CANCELLED}' WHERE id = $1`,
         [trade.id],
       );
 
@@ -259,7 +259,7 @@ export class PostbackService {
   ): Promise<void> {
     const { orderId, orderStatus, price } = payload;
 
-    if (trade.state !== "ENTERED") return;
+    if (trade.state !== TradeState.ENTERED) return;
 
     if (orderStatus === "TRADED") {
       // Exit triggered — SL or Target hit
@@ -271,7 +271,7 @@ export class PostbackService {
       const emoji = pnl >= 0 ? "🟢" : "🔴";
 
       await this.pg.query(
-        `UPDATE trades SET state = 'CLOSED', exited_at = NOW(), exit_price = $1 WHERE id = $2`,
+        `UPDATE trades SET state = '${TradeState.CLOSED}', exited_at = NOW(), exit_price = $1 WHERE id = $2`,
         [exitPrice, trade.id],
       );
 

@@ -8,12 +8,12 @@ import { AuditLogService } from "../src/services/auditLogService";
 import { StateStore } from "../src/services/stateStore";
 import { DhanService, PlaceOrderResponse } from "../src/services/dhanService";
 import { InstrumentLookupService } from "../src/services/instrumentLookupService";
+import { ConfigService } from "../src/services/configService";
 
 import activeApiResponse from "./fixtures/active-api-response.json";
 // npx vitest run tests/tradeSync.test.ts 2>&1
 // ─── Shared Config ──────────────────────────────────────────────────────────
 const baseCfg = {
-  kite: {},
   dhan: { clientId: "TEST_CLIENT" },
   apis: {
     activeTradesUrl: "http://test/active",
@@ -21,13 +21,7 @@ const baseCfg = {
   },
   postgres: { host: "", port: 5432, database: "", user: "", password: "" },
   telegram: { botToken: "tok", defaultChatId: "chat" },
-  pollingIntervalMs: 1000,
-  maxTradeCapital: 100000,
-  perTradeCapital: 10000,
-  maxActiveTrades: 10,
-  useSuperOrder: false,
   env: "development",
-  tsl: { incrementRs: 2, initialSlPct: 3, trailingStepPct: 1 },
 } as any;
 
 // ─── DhanStub ───────────────────────────────────────────────────────────────
@@ -111,6 +105,38 @@ function createStore(
   return new StoreStub();
 }
 
+// ─── ConfigServiceStub ──────────────────────────────────────────────────────
+// In-memory stub that mimics ConfigService without needing a real PG connection.
+class ConfigServiceStub {
+  private values: Record<string, number>;
+
+  constructor(overrides: Partial<{
+    maxTradeCapital: number;
+    perTradeCapital: number;
+    maxActiveTrades: number;
+  }> = {}) {
+    this.values = {
+      maxTradeCapital: overrides.maxTradeCapital ?? 100000,
+      perTradeCapital: overrides.perTradeCapital ?? 10000,
+      maxActiveTrades: overrides.maxActiveTrades ?? 10,
+      tsl_increment_rs: 2,
+      tsl_initial_sl_pct: 3,
+      tsl_trailing_step_pct: 1,
+    };
+  }
+
+  get maxTradeCapital() { return this.values.maxTradeCapital; }
+  get perTradeCapital() { return this.values.perTradeCapital; }
+  get maxActiveTrades() { return this.values.maxActiveTrades; }
+  get tsl() {
+    return {
+      incrementRs: this.values.tsl_increment_rs,
+      initialSlPct: this.values.tsl_initial_sl_pct,
+      trailingStepPct: this.values.tsl_trailing_step_pct,
+    };
+  }
+}
+
 // ─── TradeSyncStub ──────────────────────────────────────────────────────────
 class TradeSyncStub extends TradeSyncService {
   private fixtureOverride: any[];
@@ -129,23 +155,29 @@ class TradeSyncStub extends TradeSyncService {
   // Delegate to TradeEntryService — keeps all test call-sites unchanged
   async runBuyAndInitialSl(
     store: any, dhan: any, qtyResolver: any, tslService: any,
-    audit: any, instrumentLookup: any,
+    audit: any, instrumentLookup: any, configSvc?: any,
   ): Promise<void> {
     const actives = await this.fetchActiveTrades();
     return this.entryService.runBuyAndInitialSl(
       store, dhan, qtyResolver, tslService, audit, instrumentLookup, actives,
+      configSvc ?? new ConfigServiceStub(),
     );
   }
 }
 
 // ─── Helper ─────────────────────────────────────────────────────────────────
-function createServices(store: StateStore, cfg: any = baseCfg) {
+function createServices(store: StateStore, configOverrides: Partial<{
+  maxTradeCapital: number;
+  perTradeCapital: number;
+  maxActiveTrades: number;
+}> = {}) {
+  const configSvc = new ConfigServiceStub(configOverrides);
   const audit = new AuditLogService((store as any).pg);
-  const dhan = new DhanStub(cfg, {} as any, audit);
+  const dhan = new DhanStub(baseCfg, {} as any, audit);
   const qtyResolver = new QuantityResolverService();
-  const tsl = new TSLService(cfg.tsl);
+  const tsl = new TSLService(configSvc.tsl);
   const instrumentLookup = new InstrumentLookupService((store as any).pg);
-  return { dhan, qtyResolver, tsl, audit, instrumentLookup };
+  return { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc };
 }
 
 /** Helper: check if any PG query was an INSERT INTO trades */
@@ -171,7 +203,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("skips ALL trades when maxActiveTrades is already reached", async () => {
     const store = createStore(baseCfg, { openCount: 10 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup } =
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
       createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg);
 
@@ -182,6 +214,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       tsl,
       audit,
       instrumentLookup,
+      configSvc,
     );
 
     expect(dhan.placedOrders).toHaveLength(0);
@@ -190,7 +223,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("allows trade when 1 slot remains (9 open + new = 10 max)", async () => {
     const store = createStore(baseCfg, { openCount: 9 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup } =
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
       createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
@@ -201,6 +234,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       tsl,
       audit,
       instrumentLookup,
+      configSvc,
     );
 
     expect(dhan.placedOrders).toHaveLength(1);
@@ -214,7 +248,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       openCount: 5,
       deployedCapital: 95000,
     });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup } =
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
       createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
@@ -225,6 +259,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       tsl,
       audit,
       instrumentLookup,
+      configSvc,
     );
 
     expect(dhan.placedOrders).toHaveLength(0);
@@ -236,7 +271,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       openCount: 3,
       deployedCapital: 50000,
     });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup } =
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
       createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
@@ -247,6 +282,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       tsl,
       audit,
       instrumentLookup,
+      configSvc,
     );
 
     expect(dhan.placedOrders).toHaveLength(1);
@@ -257,7 +293,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("skips non-cash (options) instruments", async () => {
     const store = createStore(baseCfg, { openCount: 0, deployedCapital: 0 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup } =
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
       createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[2]]);
 
@@ -268,6 +304,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       tsl,
       audit,
       instrumentLookup,
+      configSvc,
     );
 
     expect(dhan.placedOrders).toHaveLength(0);
@@ -282,7 +319,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       deployedCapital: 0,
       existingIdempotencyKeys: ["buy:101"],
     });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup } =
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
       createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
@@ -293,6 +330,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       tsl,
       audit,
       instrumentLookup,
+      configSvc,
     );
 
     expect(dhan.placedOrders).toHaveLength(0);
@@ -302,7 +340,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("places orders for all valid cash trades (skips options)", async () => {
     const store = createStore(baseCfg, { openCount: 0, deployedCapital: 0 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup } =
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
       createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg);
 
@@ -313,6 +351,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       tsl,
       audit,
       instrumentLookup,
+      configSvc,
     );
 
     // 3 cash trades placed, options skipped
@@ -325,7 +364,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("derives correct quantity from perTradeCapital and entry price", async () => {
     const store = createStore(baseCfg, { openCount: 0, deployedCapital: 0 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup } =
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
       createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
@@ -336,6 +375,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       tsl,
       audit,
       instrumentLookup,
+      configSvc,
     );
 
     expect(dhan.placedOrders).toHaveLength(1);
@@ -346,7 +386,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("persists trade record with target and sl_trigger in Postgres", async () => {
     const store = createStore(baseCfg, { openCount: 0, deployedCapital: 0 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup } =
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
       createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
@@ -357,6 +397,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       tsl,
       audit,
       instrumentLookup,
+      configSvc,
     );
 
     const inserts = findTradeInserts(store);
@@ -379,7 +420,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("sends correct Forever Order request to Dhan", async () => {
     const store = createStore(baseCfg, { openCount: 0, deployedCapital: 0 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup } =
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
       createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
@@ -390,6 +431,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       tsl,
       audit,
       instrumentLookup,
+      configSvc,
     );
 
     const order = dhan.placedOrders[0];
@@ -409,7 +451,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("skips trade with zero entry price", async () => {
     const store = createStore(baseCfg, { openCount: 0, deployedCapital: 0 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup } =
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
       createServices(store);
     const zeroPrice = {
       ...activeApiResponse[0],
@@ -426,6 +468,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       tsl,
       audit,
       instrumentLookup,
+      configSvc,
     );
 
     expect(dhan.placedOrders).toHaveLength(0);
@@ -435,7 +478,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("skips trade with missing sc_symbol", async () => {
     const store = createStore(baseCfg, { openCount: 0, deployedCapital: 0 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup } =
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
       createServices(store);
     const noSymbol = { ...activeApiResponse[0], id: 998, sc_symbol: "" };
     const tradeSync = new TradeSyncStub(baseCfg, [noSymbol]);
@@ -447,6 +490,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       tsl,
       audit,
       instrumentLookup,
+      configSvc,
     );
 
     expect(dhan.placedOrders).toHaveLength(0);
@@ -455,13 +499,10 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
   // ── Custom Config: Lower maxActiveTrades ──
 
   it("respects custom maxActiveTrades = 2", async () => {
-    const customCfg = { ...baseCfg, maxActiveTrades: 2 };
-    const store = createStore(customCfg, { openCount: 2 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup } = createServices(
-      store,
-      customCfg,
-    );
-    const tradeSync = new TradeSyncStub(customCfg, [activeApiResponse[0]]);
+    const store = createStore(baseCfg, { openCount: 2 });
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
+      createServices(store, { maxActiveTrades: 2 });
+    const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
     await tradeSync.runBuyAndInitialSl(
       store,
@@ -470,6 +511,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       tsl,
       audit,
       instrumentLookup,
+      configSvc,
     );
 
     expect(dhan.placedOrders).toHaveLength(0);
@@ -478,16 +520,13 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
   // ── Custom Config: Lower maxTradeCapital ──
 
   it("respects custom maxTradeCapital = 20000", async () => {
-    const customCfg = { ...baseCfg, maxTradeCapital: 20000 };
-    const store = createStore(customCfg, {
+    const store = createStore(baseCfg, {
       openCount: 1,
       deployedCapital: 15000,
     });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup } = createServices(
-      store,
-      customCfg,
-    );
-    const tradeSync = new TradeSyncStub(customCfg, [activeApiResponse[0]]);
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
+      createServices(store, { maxTradeCapital: 20000 });
+    const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
     await tradeSync.runBuyAndInitialSl(
       store,
@@ -496,6 +535,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       tsl,
       audit,
       instrumentLookup,
+      configSvc,
     );
 
     expect(dhan.placedOrders).toHaveLength(0);

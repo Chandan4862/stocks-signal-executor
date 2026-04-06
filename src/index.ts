@@ -7,6 +7,7 @@ import { AuditLogService } from "./services/auditLogService";
 import { PostbackService } from "./services/postbackService";
 import { StateStore } from "./services/stateStore";
 import { TokenService } from "./services/tokenService";
+import { ConfigService } from "./services/configService";
 
 async function main() {
   const config = loadConfig();
@@ -27,8 +28,13 @@ async function main() {
   telegram.setTokenService(tokenService);
   telegram.setAudit(bootAudit);
 
+  // --- ConfigService (long-lived, backed by bootStore PG) ---
+  const configSvc = new ConfigService(bootStore.pg);
+  await configSvc.load();
+  telegram.setConfigService(configSvc);
+
   // --- Scheduler ---
-  const scheduler = new Scheduler(config, telegram);
+  const scheduler = new Scheduler(config, telegram, configSvc);
   telegram.setScheduler(scheduler);
   scheduler.start();
 

@@ -18,7 +18,8 @@ import { QuantityResolverService } from "./quantityResolverService";
 import { TSLService } from "./tslService";
 import { AuditLogService } from "./auditLogService";
 import { InstrumentLookupService } from "./instrumentLookupService";
-import { InstrumentType, LifecycleEvents } from "../enums/trade";
+import { ConfigService } from "./configService";
+import { InstrumentType, LifecycleEvents, TradeState } from "../enums/trade";
 
 export class TradeEntryService {
   constructor(private cfg: AppConfig) {}
@@ -32,6 +33,7 @@ export class TradeEntryService {
     audit: AuditLogService,
     instrumentLookup: InstrumentLookupService,
     actives: ActiveTrade[],
+    configSvc: ConfigService,
   ): Promise<void> {
     for (const at of actives) {
       // Only process cash instruments
@@ -66,6 +68,7 @@ export class TradeEntryService {
           tslService,
           audit,
           instrumentLookup,
+          configSvc,
         );
         if (!validated) {
           await this.logRecoScan(store, at, "SKIPPED", "Validation failed");
@@ -130,10 +133,11 @@ export class TradeEntryService {
     tslService: TSLService,
     audit: AuditLogService,
     instrumentLookup: InstrumentLookupService,
+    configSvc: ConfigService,
   ): Promise<ValidatedTrade | null> {
     const id = at.id;
     const symbol = String(at.sc_symbol || "").toUpperCase();
-    const activeStates = ["AWAITING_ENTRY", "ENTERED"];
+    const activeStates = [TradeState.ENTERED, TradeState.AWAITING_ENTRY];
 
     // ── Guard 1: Max active trade count ──────────────────────────────
     try {
@@ -142,12 +146,12 @@ export class TradeEntryService {
         [activeStates],
       );
       const activeCount = Number(countRes.rows?.[0]?.cnt ?? 0);
-      if (activeCount >= this.cfg.maxActiveTrades) {
+      if (activeCount >= configSvc.maxActiveTrades) {
         await audit.warn(LifecycleEvents.SKIP_TRADE, {
           id,
           reason: "Max active trade limit reached",
           activeCount,
-          maxActiveTrades: this.cfg.maxActiveTrades,
+          maxActiveTrades: configSvc.maxActiveTrades,
         });
         return null;
       }
@@ -199,7 +203,7 @@ export class TradeEntryService {
 
     // ── Resolve capital & quantity ───────────────────────────────────
     const perTradeCapital =
-      (at as any)?.meta?.max_capital ?? this.cfg.perTradeCapital;
+      (at as any)?.meta?.max_capital ?? configSvc.perTradeCapital;
     const qty = qtyResolver.deriveQty(entryPrice, Number(perTradeCapital));
     if (!qty || qty <= 0) {
       audit.record(LifecycleEvents.ERROR_OCCURRED, {
@@ -220,13 +224,13 @@ export class TradeEntryService {
         [activeStates],
       );
       const deployedCapital = Number(capRes.rows?.[0]?.deployed ?? 0);
-      if (deployedCapital + newTradeCapital > this.cfg.maxTradeCapital) {
+      if (deployedCapital + newTradeCapital > configSvc.maxTradeCapital) {
         await audit.warn(LifecycleEvents.SKIP_TRADE, {
           id,
           reason: "Max deployed capital would be exceeded",
           deployedCapital,
           newTradeCapital,
-          maxTradeCapital: this.cfg.maxTradeCapital,
+          maxTradeCapital: configSvc.maxTradeCapital,
         });
         return null;
       }
@@ -332,16 +336,16 @@ export class TradeEntryService {
     await store.pg.query(
       `INSERT INTO trades (id, tradingsymbol, exchange, reco_type, entry_price, quantity, state,
                            security_id, symbol, buy_order_id, target, sl_trigger, capital, reco_id)
-       VALUES ($1, $2, 'NSE', 'buy', $3, $4, 'AWAITING_ENTRY', $5, $6, $7, $8, $9, $10, $11)
+       VALUES ($1, $2, 'NSE', 'buy', $3, $4, '${TradeState.AWAITING_ENTRY}', $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT (id) DO UPDATE SET
-         state = 'AWAITING_ENTRY',
+         state = '${TradeState.AWAITING_ENTRY}',
          buy_order_id = EXCLUDED.buy_order_id,
          security_id = EXCLUDED.security_id,
          target = EXCLUDED.target,
          sl_trigger = EXCLUDED.sl_trigger,
          capital = EXCLUDED.capital,
          reco_id = EXCLUDED.reco_id
-       WHERE trades.state NOT IN ('ENTERED', 'CLOSED', 'CLOSED_BY_ANALYST')`,
+       WHERE trades.state NOT IN ('${TradeState.ENTERED}', '${TradeState.CLOSED}', '${TradeState.CLOSED_BY_ANALYST}')`,
       [
         v.id,
         v.symbol,

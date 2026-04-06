@@ -19,7 +19,7 @@ import type { AppConfig } from "../config/schema";
 import { DhanService } from "./dhanService";
 import { StateStore } from "./stateStore";
 import { AuditLogService } from "./auditLogService";
-import { LifecycleEvents } from "../enums/trade";
+import { LifecycleEvents, TradeState } from "../enums/trade";
 import { TradeHelpers } from "./tradeHelpers";
 import type { ClosedTrade } from "../models/closedTrade";
 
@@ -44,12 +44,12 @@ export class TradeReconciliationService {
 
         // Already closed locally — skip
         if (
-          tradeRow.state === "CLOSED" ||
-          tradeRow.state === "CLOSED_BY_ANALYST"
+          tradeRow.state === TradeState.CLOSED ||
+          tradeRow.state === TradeState.CLOSED_BY_ANALYST
         )
           continue;
 
-        if (tradeRow.state === "AWAITING_ENTRY") {
+        if (tradeRow.state === TradeState.AWAITING_ENTRY) {
           await this.handleClosedAwaitingEntry(
             store,
             dhan,
@@ -57,7 +57,7 @@ export class TradeReconciliationService {
             tradeRow,
             ct,
           );
-        } else if (tradeRow.state === "ENTERED") {
+        } else if (tradeRow.state === TradeState.ENTERED) {
           await this.handleClosedEntered(store, dhan, audit, tradeRow, ct);
         }
       }
@@ -84,7 +84,7 @@ export class TradeReconciliationService {
 
       // ── Path A: AWAITING_ENTRY + holding exists ──
       const awaitingRes = await store.pg.query(
-        `SELECT * FROM trades WHERE state = 'AWAITING_ENTRY' AND buy_order_id IS NOT NULL`,
+        `SELECT * FROM trades WHERE state = '${TradeState.AWAITING_ENTRY}' AND buy_order_id IS NOT NULL`,
       );
 
       for (const tradeRow of awaitingRes.rows) {
@@ -143,7 +143,7 @@ export class TradeReconciliationService {
           } else if (!foreverOrder || foreverOrder.orderStatus !== "PENDING") {
             // No holding, no traded child, forever order gone/not pending
             await store.pg.query(
-              `UPDATE trades SET state = 'CANCELLED' WHERE id = $1`,
+              `UPDATE trades SET state = '${TradeState.CANCELLED}' WHERE id = $1`,
               [tradeRow.id],
             );
 
@@ -170,7 +170,7 @@ export class TradeReconciliationService {
 
       // ── Path B: ENTERED + no holding → CLOSED ──
       const enteredRes = await store.pg.query(
-        `SELECT * FROM trades WHERE state = 'ENTERED'`,
+        `SELECT * FROM trades WHERE state = '${TradeState.ENTERED}'`,
       );
 
       for (const tradeRow of enteredRes.rows) {
@@ -188,7 +188,7 @@ export class TradeReconciliationService {
         if (!holding || holding.totalQty === 0) {
           // Path B: No holding — just close
           await store.pg.query(
-            `UPDATE trades SET state = 'CLOSED', exited_at = NOW() WHERE id = $1`,
+            `UPDATE trades SET state = '${TradeState.CLOSED}', exited_at = NOW() WHERE id = $1`,
             [tradeRow.id],
           );
 
@@ -263,7 +263,7 @@ export class TradeReconciliationService {
     if (!symbol) return null;
 
     const bySymbol = await store.pg.query(
-      `SELECT * FROM trades WHERE symbol = $1 AND state IN ('AWAITING_ENTRY', 'ENTERED') LIMIT 1`,
+      `SELECT * FROM trades WHERE symbol = $1 AND state IN ('${TradeState.AWAITING_ENTRY}', '${TradeState.ENTERED}') LIMIT 1`,
       [symbol],
     );
     return bySymbol.rows.length > 0 ? bySymbol.rows[0] : null;
@@ -293,7 +293,7 @@ export class TradeReconciliationService {
           });
         }
       }
-      await store.pg.query(`UPDATE trades SET state = 'CLOSED' WHERE id = $1`, [
+      await store.pg.query(`UPDATE trades SET state = '${TradeState.CLOSED}' WHERE id = $1`, [
         tradeRow.id,
       ]);
       await audit.info(LifecycleEvents.SKIP_TRADE, {
@@ -338,7 +338,7 @@ export class TradeReconciliationService {
         tradeRow,
         exitPrice,
         source: "processClosedTrades — analyst closed",
-        closedState: "CLOSED_BY_ANALYST",
+        closedState: TradeState.CLOSED_BY_ANALYST,
       });
     } catch (err: any) {
       const payload = TradeHelpers.buildErrorPayload(
