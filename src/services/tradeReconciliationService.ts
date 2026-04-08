@@ -117,20 +117,18 @@ export class TradeReconciliationService {
               )
             : undefined;
 
-          // Check /orders for a TRADED child order (S5 recovery)
-          const tradedChild = regularOrders.find(
-            (o) =>
-              String(o.algoId) === String(tradeRow.buy_order_id) &&
-              o.orderStatus === "TRADED",
+          // Check /orders for any child order spawned by this forever order
+          const childOrder = regularOrders.find(
+            (o) => String(o.algoId) === String(tradeRow.buy_order_id),
           );
 
-          if (tradedChild) {
+          if (childOrder && childOrder.orderStatus === "TRADED") {
             // Entry DID succeed via child order
             const entryPrice = TradeHelpers.resolveChildPrice(
-              tradedChild,
+              childOrder,
               Number(tradeRow.entry_price),
             );
-            const qty = tradedChild.filledQty || tradeRow.quantity;
+            const qty = childOrder.filledQty || tradeRow.quantity;
 
             await TradeHelpers.markEntered(
               store,
@@ -140,8 +138,17 @@ export class TradeReconciliationService {
               qty,
               "reconcilePositions — Path C (child order recovery)",
             );
-          } else if (!foreverOrder || foreverOrder.orderStatus !== "PENDING") {
-            // No holding, no traded child, forever order gone/not pending
+          } else if (
+            childOrder &&
+            ["REJECTED", "CANCELLED", "EXPIRED"].includes(
+              childOrder.orderStatus,
+            )
+          ) {
+            // Child order exists but failed — cancel with the actual reason
+            const reason =
+              childOrder.omsErrorDescription ||
+              `Child order ${childOrder.orderStatus}`;
+
             await store.pg.query(
               `UPDATE trades SET state = '${TradeState.CANCELLED}' WHERE id = $1`,
               [tradeRow.id],
@@ -149,18 +156,45 @@ export class TradeReconciliationService {
 
             await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
               id: tradeRow.id,
-              action: "reconcilePositions",
-              message:
-                "Stale AWAITING_ENTRY: no holding, no traded child, forever order gone/not pending. Marked CANCELLED.",
+              action: "reconcilePositions — Path C",
+              message: `Entry child order ${childOrder.orderStatus}. Marked CANCELLED.`,
+              symbol: tradeRow.symbol,
+              childOrderId: childOrder.orderId,
+              childStatus: childOrder.orderStatus,
+              reason,
+            });
+
+            await audit.notify(
+              `⛔ Entry ${childOrder.orderStatus}\n` +
+                `Symbol: ${tradeRow.symbol}\n` +
+                `Reason: ${reason}\n` +
+                `Order was ${childOrder.orderStatus}`,
+            );
+          } else if (!foreverOrder || foreverOrder.orderStatus !== "PENDING") {
+            // No holding, no usable child, forever order gone/not pending
+            const childInfo = childOrder
+              ? `child order ${childOrder.orderStatus}`
+              : "no child order found";
+
+            await store.pg.query(
+              `UPDATE trades SET state = '${TradeState.CANCELLED}' WHERE id = $1`,
+              [tradeRow.id],
+            );
+
+            await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
+              id: tradeRow.id,
+              action: "reconcilePositions — Path C",
+              message: `Stale AWAITING_ENTRY: no holding, ${childInfo}, forever order gone/not pending. Marked CANCELLED.`,
               symbol: tradeRow.symbol,
               foreverOrderFound: !!foreverOrder,
               foreverStatus: foreverOrder?.orderStatus ?? "NOT_FOUND",
+              childOrderStatus: childOrder?.orderStatus ?? "NOT_FOUND",
             });
 
             await audit.notify(
               `⛔ Stale Entry Cancelled\n` +
                 `Symbol: ${tradeRow.symbol}\n` +
-                `No holding, no traded order, forever order ${foreverOrder ? foreverOrder.orderStatus : "not found"}.\n` +
+                `No holding, ${childInfo}, forever order ${foreverOrder ? foreverOrder.orderStatus : "not found"}.\n` +
                 `Likely rejected/expired while server was down.`,
             );
           }
@@ -293,9 +327,10 @@ export class TradeReconciliationService {
           });
         }
       }
-      await store.pg.query(`UPDATE trades SET state = '${TradeState.CLOSED}' WHERE id = $1`, [
-        tradeRow.id,
-      ]);
+      await store.pg.query(
+        `UPDATE trades SET state = '${TradeState.CLOSED}' WHERE id = $1`,
+        [tradeRow.id],
+      );
       await audit.info(LifecycleEvents.SKIP_TRADE, {
         id: tradeRow.id,
         recoId: ct.id,
