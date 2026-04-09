@@ -125,7 +125,8 @@ export class TokenService {
     const tried: string[] = [];
     if (this.cachedToken) tried.push("in-memory (expired)");
     if (dbRow) tried.push("DB token (invalid/expired)");
-    if (this.cfg.dhan.pin && this.cfg.dhan.totpSecret) tried.push("TOTP auto-gen (failed)");
+    if (this.cfg.dhan.pin && this.cfg.dhan.totpSecret)
+      tried.push("TOTP auto-gen (failed)");
     else tried.push("TOTP (not configured)");
 
     await this.audit.critical(LifecycleEvents.ERROR_OCCURRED, {
@@ -273,7 +274,7 @@ export class TokenService {
       });
       return data.accessToken;
     } catch (err: any) {
-      await this.audit.error(LifecycleEvents.ERROR_OCCURRED, {
+      await this.audit.warn(LifecycleEvents.ERROR_OCCURRED, {
         action: "TokenService.renewToken",
         url: `GET ${DHAN_API_BASE}/RenewToken`,
         ...this.extractDhanError(err),
@@ -422,8 +423,11 @@ export class TokenService {
       err?.response?.config?.url ??
       err?.request?.path ??
       undefined;
-    const method = (err?.config?.method ?? err?.response?.config?.method ?? "")
-      .toUpperCase();
+    const method = (
+      err?.config?.method ??
+      err?.response?.config?.method ??
+      ""
+    ).toUpperCase();
     return {
       error: err?.message ?? String(err),
       httpStatus: status,
