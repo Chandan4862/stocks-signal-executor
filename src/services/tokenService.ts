@@ -125,8 +125,7 @@ export class TokenService {
     const tried: string[] = [];
     if (this.cachedToken) tried.push("in-memory (expired)");
     if (dbRow) tried.push("DB token (invalid/expired)");
-    if (this.cfg.dhan.pin && this.cfg.dhan.totpSecret)
-      tried.push("TOTP auto-gen (failed)");
+    if (this.cfg.dhan.pin && this.cfg.dhan.totpSecret) tried.push("TOTP auto-gen (failed)");
     else tried.push("TOTP (not configured)");
 
     await this.audit.critical(LifecycleEvents.ERROR_OCCURRED, {
@@ -196,8 +195,7 @@ export class TokenService {
     if (msUntilExpiry > TokenService.RENEWAL_WINDOW_MS) return;
 
     // Cooldown: don't retry within 10 minutes
-    if (now - this.renewalAttemptedAt < TokenService.RENEWAL_COOLDOWN_MS)
-      return;
+    if (now - this.renewalAttemptedAt < TokenService.RENEWAL_COOLDOWN_MS) return;
 
     this.renewalAttemptedAt = now;
     const token = this.cachedToken;
@@ -245,16 +243,13 @@ export class TokenService {
    */
   async renewToken(currentToken: string): Promise<string | null> {
     try {
-      const { data } = await axios.get<RenewTokenResponse>(
-        `${DHAN_API_BASE}/RenewToken`,
-        {
-          headers: {
-            "access-token": currentToken,
-            dhanClientId: this.cfg.dhan.clientId,
-          },
-          timeout: 10_000,
+      const { data } = await axios.get<RenewTokenResponse>(`${DHAN_API_BASE}/RenewToken`, {
+        headers: {
+          "access-token": currentToken,
+          dhanClientId: this.cfg.dhan.clientId,
         },
-      );
+        timeout: 10_000,
+      });
 
       if (!data.accessToken) {
         await this.audit.warn(LifecycleEvents.ERROR_OCCURRED, {
@@ -363,13 +358,10 @@ export class TokenService {
    */
   async fetchProfile(token: string): Promise<DhanProfile | null> {
     try {
-      const { data } = await axios.get<DhanProfile>(
-        `${DHAN_API_BASE}/profile`,
-        {
-          headers: { "access-token": token },
-          timeout: 10_000,
-        },
-      );
+      const { data } = await axios.get<DhanProfile>(`${DHAN_API_BASE}/profile`, {
+        headers: { "access-token": token },
+        timeout: 10_000,
+      });
       return data;
     } catch (err: any) {
       const status = err?.response?.status;
@@ -418,26 +410,14 @@ export class TokenService {
   private extractDhanError(err: any): Record<string, any> {
     const status = err?.response?.status;
     const body = err?.response?.data;
-    const url =
-      err?.config?.url ??
-      err?.response?.config?.url ??
-      err?.request?.path ??
-      undefined;
-    const method = (
-      err?.config?.method ??
-      err?.response?.config?.method ??
-      ""
-    ).toUpperCase();
+    const url = err?.config?.url ?? err?.response?.config?.url ?? err?.request?.path ?? undefined;
+    const method = (err?.config?.method ?? err?.response?.config?.method ?? "").toUpperCase();
     return {
       error: err?.message ?? String(err),
       httpStatus: status,
       url: url ? `${method} ${url}` : undefined,
       dhanErrorCode: body?.errorCode ?? body?.internalErrorCode ?? undefined,
-      dhanMessage:
-        body?.errorMessage ??
-        body?.internalErrorMessage ??
-        body?.message ??
-        undefined,
+      dhanMessage: body?.errorMessage ?? body?.internalErrorMessage ?? body?.message ?? undefined,
       responseBody: body,
     };
   }
@@ -490,9 +470,7 @@ export class TokenService {
       if (!res.rows[0]?.enctoken) return null;
       return {
         token: res.rows[0].enctoken,
-        expiresAt: res.rows[0].expires_at
-          ? new Date(res.rows[0].expires_at)
-          : null,
+        expiresAt: res.rows[0].expires_at ? new Date(res.rows[0].expires_at) : null,
       };
     } catch (err: any) {
       await this.audit.error(LifecycleEvents.ERROR_OCCURRED, {
@@ -509,9 +487,7 @@ export class TokenService {
    */
   private parseTokenValidity(validity: string): Date | undefined {
     // Format: "30/03/2025 15:37"
-    const match = validity.match(
-      /^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})$/,
-    );
+    const match = validity.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})$/);
     if (!match) return undefined;
     const [, dd, mm, yyyy, hh, min] = match;
     // Dhan likely reports in IST — store as-is for TTL calculation

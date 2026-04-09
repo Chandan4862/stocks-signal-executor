@@ -61,14 +61,9 @@ export class TradeSyncService {
       } catch {}
     }
 
-    const sc_symbol = String(
-      raw.sc_symbol || meta?.sc_symbol || "",
-    ).toUpperCase();
-    const instrument_type_raw = String(
-      raw.instrument_type || "cash",
-    ).toLowerCase();
-    const instrument_type =
-      instrument_type_raw === InstrumentType.OPTIONS ? "options" : "cash";
+    const sc_symbol = String(raw.sc_symbol || meta?.sc_symbol || "").toUpperCase();
+    const instrument_type_raw = String(raw.instrument_type || "cash").toLowerCase();
+    const instrument_type = instrument_type_raw === InstrumentType.OPTIONS ? "options" : "cash";
     return {
       id: Number(raw.id),
       reco_id: raw.reco_id ? Number(raw.reco_id) : undefined,
@@ -76,8 +71,7 @@ export class TradeSyncService {
       asset_class: "equity",
       instrument_type,
       instrument: raw.instrument ? String(raw.instrument) : undefined,
-      reco_type:
-        String(raw.reco_type).toLowerCase() === "sell" ? "sell" : "buy",
+      reco_type: String(raw.reco_type).toLowerCase() === "sell" ? "sell" : "buy",
       reco_category: raw.reco_category || undefined,
       opt_type: raw.opt_type || undefined,
       option_category: raw.option_category || undefined,
@@ -105,12 +99,8 @@ export class TradeSyncService {
       reco_end_date: raw.reco_end_date || undefined,
       updated_at: raw.updated_at || undefined,
       created_at: raw.created_at || undefined,
-      updated_at_epoch: raw.updated_at_epoch
-        ? Number(raw.updated_at_epoch)
-        : undefined,
-      created_at_epoch: raw.created_at_epoch
-        ? Number(raw.created_at_epoch)
-        : undefined,
+      updated_at_epoch: raw.updated_at_epoch ? Number(raw.updated_at_epoch) : undefined,
+      created_at_epoch: raw.created_at_epoch ? Number(raw.created_at_epoch) : undefined,
       closed_on_dt: raw.closed_on_dt || undefined,
       strategy_name_t: raw.strategy_name_t || undefined,
       strategy_name: raw.strategy_name || undefined,
@@ -159,17 +149,12 @@ export class TradeSyncService {
       } catch {}
     }
 
-    const sc_symbol = String(
-      raw.sc_symbol || meta?.sc_symbol || "",
-    ).toUpperCase();
+    const sc_symbol = String(raw.sc_symbol || meta?.sc_symbol || "").toUpperCase();
     const exitPrice = asNum(raw.exit_price ?? meta?.exit_price);
     const closedOn = raw.closed_on_dt || meta?.closed_on || undefined;
 
-    const instrument_type_raw = String(
-      raw.instrument_type || "cash",
-    ).toLowerCase();
-    const instrument_type =
-      instrument_type_raw === InstrumentType.OPTIONS ? "options" : "cash";
+    const instrument_type_raw = String(raw.instrument_type || "cash").toLowerCase();
+    const instrument_type = instrument_type_raw === InstrumentType.OPTIONS ? "options" : "cash";
 
     return {
       id: Number(raw.id),
@@ -178,8 +163,7 @@ export class TradeSyncService {
       asset_class: "equity",
       instrument_type: "cash",
       instrument: raw.instrument ? String(raw.instrument) : undefined,
-      reco_type:
-        String(raw.reco_type).toLowerCase() === "sell" ? "sell" : "buy",
+      reco_type: String(raw.reco_type).toLowerCase() === "sell" ? "sell" : "buy",
       reco_category: raw.reco_category || undefined,
       opt_type: raw.opt_type || undefined,
       option_category: raw.option_category || undefined,
@@ -207,12 +191,8 @@ export class TradeSyncService {
       reco_end_date: raw.reco_end_date || undefined,
       updated_at: raw.updated_at || undefined,
       created_at: raw.created_at || undefined,
-      updated_at_epoch: raw.updated_at_epoch
-        ? Number(raw.updated_at_epoch)
-        : undefined,
-      created_at_epoch: raw.created_at_epoch
-        ? Number(raw.created_at_epoch)
-        : undefined,
+      updated_at_epoch: raw.updated_at_epoch ? Number(raw.updated_at_epoch) : undefined,
+      created_at_epoch: raw.created_at_epoch ? Number(raw.created_at_epoch) : undefined,
       closed_on_dt: closedOn,
       analyst_name: raw.analyst_name || undefined,
       display_name: raw.display_name || undefined,

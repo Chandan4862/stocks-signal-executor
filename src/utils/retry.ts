@@ -1,6 +1,6 @@
 export async function backoff<T>(
   fn: () => Promise<T>,
-  opts?: { retries?: number; baseMs?: number }
+  opts?: { retries?: number; baseMs?: number },
 ): Promise<T> {
   const retries = opts?.retries ?? 3;
   const baseMs = opts?.baseMs ?? 200;

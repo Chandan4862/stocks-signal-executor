@@ -12,12 +12,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { StateStore } from "../../src/services/stateStore";
 import { ConfigService } from "../../src/services/configService";
-import {
-  cfg,
-  createTestDb,
-  dropTestDb,
-  cleanTables,
-} from "./helpers";
+import { cfg, createTestDb, dropTestDb, cleanTables } from "./helpers";
 
 describe("ConfigService Integration", () => {
   let store: StateStore;
@@ -81,9 +76,7 @@ describe("ConfigService Integration", () => {
   // ═══════════════════════════════════════════════════════════════════════
 
   it("load() with partial DB rows fills missing keys from defaults", async () => {
-    await store.pg.query(
-      "INSERT INTO app_config (key, value) VALUES ('tsl_increment_rs', '5')",
-    );
+    await store.pg.query("INSERT INTO app_config (key, value) VALUES ('tsl_increment_rs', '5')");
 
     await configSvc.load();
 
@@ -164,9 +157,7 @@ describe("ConfigService Integration", () => {
   // ═══════════════════════════════════════════════════════════════════════
 
   it("set() upserts — updates existing DB row", async () => {
-    await store.pg.query(
-      "INSERT INTO app_config (key, value) VALUES ('max_active_trades', '5')",
-    );
+    await store.pg.query("INSERT INTO app_config (key, value) VALUES ('max_active_trades', '5')");
     await configSvc.load();
     expect(configSvc.maxActiveTrades).toBe(5);
 
@@ -252,9 +243,7 @@ describe("ConfigService Integration", () => {
   // ═══════════════════════════════════════════════════════════════════════
 
   it("unknown keys in DB are loaded into cache but not shown in getAll()", async () => {
-    await store.pg.query(
-      "INSERT INTO app_config (key, value) VALUES ('secret_feature', '42')",
-    );
+    await store.pg.query("INSERT INTO app_config (key, value) VALUES ('secret_feature', '42')");
     await configSvc.load();
 
     // getAll() only shows DEFAULTS keys

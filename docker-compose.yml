@@ -24,12 +24,7 @@ services:
     volumes:
       - .:/app
       - node_modules:/app/node_modules
-    command:
-      [
-        "sh",
-        "-lc",
-        "[ -d node_modules ] || npm ci; npm run migrate:up && npm run dev:watch",
-      ]
+    command: ["sh", "-lc", "[ -d node_modules ] || npm ci; npm run migrate:up && npm run dev:watch"]
     depends_on:
       stock_postgres:
         condition: service_healthy

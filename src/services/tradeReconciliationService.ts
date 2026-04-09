@@ -43,20 +43,11 @@ export class TradeReconciliationService {
         if (!tradeRow) continue;
 
         // Already closed locally — skip
-        if (
-          tradeRow.state === TradeState.CLOSED ||
-          tradeRow.state === TradeState.CLOSED_BY_ANALYST
-        )
+        if (tradeRow.state === TradeState.CLOSED || tradeRow.state === TradeState.CLOSED_BY_ANALYST)
           continue;
 
         if (tradeRow.state === TradeState.AWAITING_ENTRY) {
-          await this.handleClosedAwaitingEntry(
-            store,
-            dhan,
-            audit,
-            tradeRow,
-            ct,
-          );
+          await this.handleClosedAwaitingEntry(store, dhan, audit, tradeRow, ct);
         } else if (tradeRow.state === TradeState.ENTERED) {
           await this.handleClosedEntered(store, dhan, audit, tradeRow, ct);
         }
@@ -88,16 +79,12 @@ export class TradeReconciliationService {
       );
 
       for (const tradeRow of awaitingRes.rows) {
-        const holding = holdings.find(
-          (h) => String(h.securityId) === String(tradeRow.security_id),
-        );
+        const holding = holdings.find((h) => String(h.securityId) === String(tradeRow.security_id));
 
         if (holding && holding.totalQty > 0) {
           // Holding exists — entry happened while we were down
           const entryPrice =
-            holding.avgCostPrice > 0
-              ? holding.avgCostPrice
-              : Number(tradeRow.entry_price);
+            holding.avgCostPrice > 0 ? holding.avgCostPrice : Number(tradeRow.entry_price);
           const qty = Math.min(tradeRow.quantity, holding.totalQty);
 
           await TradeHelpers.markEntered(
@@ -111,10 +98,7 @@ export class TradeReconciliationService {
         } else {
           // ── Path C: AWAITING_ENTRY + no holding ──
           const foreverOrder = Array.isArray(foreverOrders)
-            ? TradeHelpers.findForeverOrder(
-                foreverOrders,
-                tradeRow.buy_order_id,
-              )
+            ? TradeHelpers.findForeverOrder(foreverOrders, tradeRow.buy_order_id)
             : undefined;
 
           // Check /orders for any child order spawned by this forever order
@@ -140,14 +124,11 @@ export class TradeReconciliationService {
             );
           } else if (
             childOrder &&
-            ["REJECTED", "CANCELLED", "EXPIRED"].includes(
-              childOrder.orderStatus,
-            )
+            ["REJECTED", "CANCELLED", "EXPIRED"].includes(childOrder.orderStatus)
           ) {
             // Child order exists but failed — cancel with the actual reason
             const reason =
-              childOrder.omsErrorDescription ||
-              `Child order ${childOrder.orderStatus}`;
+              childOrder.omsErrorDescription || `Child order ${childOrder.orderStatus}`;
 
             await store.pg.query(
               `UPDATE trades SET state = '${TradeState.CANCELLED}' WHERE id = $1`,
@@ -215,9 +196,7 @@ export class TradeReconciliationService {
           if (enteredDate === today) continue;
         }
 
-        const holding = holdings.find(
-          (h) => String(h.securityId) === String(tradeRow.security_id),
-        );
+        const holding = holdings.find((h) => String(h.securityId) === String(tradeRow.security_id));
 
         if (!holding || holding.totalQty === 0) {
           // Path B: No holding — just close
@@ -229,8 +208,7 @@ export class TradeReconciliationService {
           await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
             id: tradeRow.id,
             action: "reconcilePositions",
-            message:
-              "Trade was ENTERED locally but no holding found on Dhan. Marked CLOSED.",
+            message: "Trade was ENTERED locally but no holding found on Dhan. Marked CLOSED.",
             symbol: tradeRow.symbol,
           });
 
@@ -243,10 +221,9 @@ export class TradeReconciliationService {
         } else if (tradeRow.sell_order_id) {
           // Path D: Holding exists but sell_order_id is set (stale sell attempt)
           // Clear sell_order_id to allow retry, then notify user
-          await store.pg.query(
-            `UPDATE trades SET sell_order_id = NULL WHERE id = $1`,
-            [tradeRow.id],
-          );
+          await store.pg.query(`UPDATE trades SET sell_order_id = NULL WHERE id = $1`, [
+            tradeRow.id,
+          ]);
 
           await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
             id: tradeRow.id,
@@ -281,15 +258,9 @@ export class TradeReconciliationService {
    * S4: Find local trade matching a closed trade.
    * Primary: match by reco_id. Fallback: match by symbol + active state.
    */
-  private async findLocalTrade(
-    store: StateStore,
-    ct: ClosedTrade,
-  ): Promise<any | null> {
+  private async findLocalTrade(store: StateStore, ct: ClosedTrade): Promise<any | null> {
     // Primary: match by reco_id
-    const byReco = await store.pg.query(
-      `SELECT * FROM trades WHERE reco_id = $1`,
-      [ct.id],
-    );
+    const byReco = await store.pg.query(`SELECT * FROM trades WHERE reco_id = $1`, [ct.id]);
     if (byReco.rows.length > 0) return byReco.rows[0];
 
     // Fallback: match by symbol + active state
@@ -327,15 +298,13 @@ export class TradeReconciliationService {
           });
         }
       }
-      await store.pg.query(
-        `UPDATE trades SET state = '${TradeState.CLOSED}' WHERE id = $1`,
-        [tradeRow.id],
-      );
+      await store.pg.query(`UPDATE trades SET state = '${TradeState.CLOSED}' WHERE id = $1`, [
+        tradeRow.id,
+      ]);
       await audit.info(LifecycleEvents.SKIP_TRADE, {
         id: tradeRow.id,
         recoId: ct.id,
-        message:
-          "Trade closed by analyst before entry executed. Cancelled pending Forever order.",
+        message: "Trade closed by analyst before entry executed. Cancelled pending Forever order.",
       });
 
       await audit.notify(

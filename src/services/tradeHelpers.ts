@@ -139,10 +139,10 @@ export class TradeHelpers {
       const sellRes = await dhan.placeOrder(sellReq);
 
       // Update sell_order_id with actual orderId
-      await store.pg.query(
-        `UPDATE trades SET sell_order_id = $1 WHERE id = $2`,
-        [sellRes.orderId, tradeRow.id],
-      );
+      await store.pg.query(`UPDATE trades SET sell_order_id = $1 WHERE id = $2`, [
+        sellRes.orderId,
+        tradeRow.id,
+      ]);
 
       // Record PnL
       await TradeHelpers.recordPnl(store, tradeRow, exitPrice);
@@ -178,10 +178,7 @@ export class TradeHelpers {
       return { success: true, orderId: sellRes.orderId };
     } catch (err: any) {
       // Sell failed — clear sell_order_id so next tick can retry
-      await store.pg.query(
-        `UPDATE trades SET sell_order_id = NULL WHERE id = $1`,
-        [tradeRow.id],
-      );
+      await store.pg.query(`UPDATE trades SET sell_order_id = NULL WHERE id = $1`, [tradeRow.id]);
 
       const payload = TradeHelpers.buildErrorPayload(
         String(tradeRow.id),
@@ -216,11 +213,7 @@ export class TradeHelpers {
    * Build an error payload from either a DhanApiError or a generic Error.
    * Eliminates repeated instanceof checks across the codebase.
    */
-  static buildErrorPayload(
-    id: string,
-    action: string,
-    err: any,
-  ): Record<string, any> {
+  static buildErrorPayload(id: string, action: string, err: any): Record<string, any> {
     if (err instanceof DhanApiError) {
       return { id, action, ...err.toAuditPayload() };
     }
@@ -230,11 +223,7 @@ export class TradeHelpers {
   /**
    * Record realized PnL into pnl_records table.
    */
-  static async recordPnl(
-    store: StateStore,
-    tradeRow: any,
-    exitPrice: number,
-  ): Promise<void> {
+  static async recordPnl(store: StateStore, tradeRow: any, exitPrice: number): Promise<void> {
     try {
       const entryPrice = Number(tradeRow.entry_price);
       const quantity = Number(tradeRow.quantity);

@@ -104,9 +104,7 @@ describe("Capital Guards Integration", () => {
     expect(trade).toBeNull();
 
     // No order should have been placed
-    const orderCalls = dhan.calls.filter(
-      (c) => c.method === "placeForeverOrder",
-    );
+    const orderCalls = dhan.calls.filter((c) => c.method === "placeForeverOrder");
     expect(orderCalls).toHaveLength(0);
   });
 
@@ -170,9 +168,7 @@ describe("Capital Guards Integration", () => {
     expect(trade).toBeNull();
 
     // No order should have been placed
-    const orderCalls = dhan.calls.filter(
-      (c) => c.method === "placeForeverOrder",
-    );
+    const orderCalls = dhan.calls.filter((c) => c.method === "placeForeverOrder");
     expect(orderCalls).toHaveLength(0);
   });
 
@@ -229,9 +225,7 @@ describe("Capital Guards Integration", () => {
     const trade = await getTradeState(store, 9017);
     expect(trade).toBeNull();
 
-    const orderCalls = dhan.calls.filter(
-      (c) => c.method === "placeForeverOrder",
-    );
+    const orderCalls = dhan.calls.filter((c) => c.method === "placeForeverOrder");
     expect(orderCalls).toHaveLength(0);
   });
 });

@@ -41,21 +41,9 @@ export class Scheduler {
   private reconcileTimer: NodeJS.Timeout | null = null;
 
   // Pending entries: 10:00–14:00 (entries rarely trigger after 14:00)
-  private static readonly PENDING_ENTRY_TIMES = [
-    "10:00",
-    "11:00",
-    "12:00",
-    "13:00",
-    "14:00",
-  ];
+  private static readonly PENDING_ENTRY_TIMES = ["10:00", "11:00", "12:00", "13:00", "14:00"];
   // Entered trades: 11:00–15:00 (LTP needs time to settle; 15:00 is last sell window)
-  private static readonly ENTERED_TRADE_TIMES = [
-    "11:00",
-    "12:00",
-    "13:00",
-    "14:00",
-    "15:00",
-  ];
+  private static readonly ENTERED_TRADE_TIMES = ["11:00", "12:00", "13:00", "14:00", "15:00"];
   // Before market close (1h buffer before 15:30)
   private static readonly CLOSED_TRADES_TIME = "14:30";
   // After market close
@@ -241,8 +229,7 @@ export class Scheduler {
   private async executePendingEntryMonitor(): Promise<void> {
     await backoff(
       async () => {
-        const { store, audit, tokens, dhan, tradeMonitor } =
-          await this.initServices();
+        const { store, audit, tokens, dhan, tradeMonitor } = await this.initServices();
 
         try {
           const token = await tokens.getToken();
@@ -288,8 +275,7 @@ export class Scheduler {
   private async executeEnteredTradeMonitor(): Promise<void> {
     await backoff(
       async () => {
-        const { store, audit, tokens, dhan, tradeMonitor } =
-          await this.initServices();
+        const { store, audit, tokens, dhan, tradeMonitor } = await this.initServices();
 
         try {
           const token = await tokens.getToken();
@@ -319,13 +305,10 @@ export class Scheduler {
   /* ------------------------------------------------------------------ */
 
   private scheduleClosedTradesScan(): void {
-    this.closedTradesTimer = this.scheduleAtIST(
-      Scheduler.CLOSED_TRADES_TIME,
-      async () => {
-        await this.executeClosedTradesScan().catch(() => {});
-        this.scheduleClosedTradesScan(); // re-schedule for next day
-      },
-    );
+    this.closedTradesTimer = this.scheduleAtIST(Scheduler.CLOSED_TRADES_TIME, async () => {
+      await this.executeClosedTradesScan().catch(() => {});
+      this.scheduleClosedTradesScan(); // re-schedule for next day
+    });
     this.logSchedule("Closed trades scan", Scheduler.CLOSED_TRADES_TIME);
   }
 
@@ -350,12 +333,7 @@ export class Scheduler {
 
           // Phase 4: Handle external closures from Closed API
           const closed = await tradeSync.fetchClosedTrades();
-          await tradeReconciliation.processClosedTrades(
-            store,
-            dhan,
-            audit,
-            closed,
-          );
+          await tradeReconciliation.processClosedTrades(store, dhan, audit, closed);
         } finally {
           await store.disconnect();
         }
@@ -369,21 +347,17 @@ export class Scheduler {
   /* ------------------------------------------------------------------ */
 
   private scheduleReconciliation(): void {
-    this.reconcileTimer = this.scheduleAtIST(
-      Scheduler.RECONCILE_TIME,
-      async () => {
-        await this.executeReconciliation().catch(() => {});
-        this.scheduleReconciliation(); // re-schedule for next day
-      },
-    );
+    this.reconcileTimer = this.scheduleAtIST(Scheduler.RECONCILE_TIME, async () => {
+      await this.executeReconciliation().catch(() => {});
+      this.scheduleReconciliation(); // re-schedule for next day
+    });
     this.logSchedule("Reconciliation", Scheduler.RECONCILE_TIME);
   }
 
   private async executeReconciliation(): Promise<void> {
     await backoff(
       async () => {
-        const { store, audit, tokens, dhan, tradeReconciliation } =
-          await this.initServices();
+        const { store, audit, tokens, dhan, tradeReconciliation } = await this.initServices();
 
         try {
           const token = await tokens.getToken();
@@ -417,10 +391,7 @@ export class Scheduler {
    * If the time has already passed today, schedules for tomorrow.
    * Skips weekends (Saturday=6, Sunday=0).
    */
-  private scheduleAtIST(
-    time: string,
-    callback: () => Promise<void>,
-  ): NodeJS.Timeout {
+  private scheduleAtIST(time: string, callback: () => Promise<void>): NodeJS.Timeout {
     const [hours, mins] = time.split(":").map(Number);
     const IST = "Asia/Kolkata";
 

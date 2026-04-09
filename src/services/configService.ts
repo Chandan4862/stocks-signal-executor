@@ -100,10 +100,7 @@ export class ConfigService {
    *
    * Returns a result object for the caller (Telegram) to display.
    */
-  async set(
-    key: string,
-    value: string,
-  ): Promise<{ ok: boolean; message: string }> {
+  async set(key: string, value: string): Promise<{ ok: boolean; message: string }> {
     if (!DEFAULTS[key]) {
       const validKeys = Object.keys(DEFAULTS).join(", ");
       return {
@@ -154,9 +151,7 @@ export class ConfigService {
       const desc = DESCRIPTIONS[key] ?? "";
       lines.push(`  ${key}: ${val}  (${desc})`);
     }
-    lines.push(
-      "\nUpdate: /config <key> <value>",
-    );
+    lines.push("\nUpdate: /config <key> <value>");
     return lines.join("\n");
   }
 
