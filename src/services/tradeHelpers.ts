@@ -70,6 +70,7 @@ export class TradeHelpers {
       `✅ ENTRY Confirmed\n` +
         `Symbol: ${tradeRow.symbol}\n` +
         `Entered @ ₹${entryPrice} | Qty: ${quantity}\n` +
+        `🎯 Target: ₹${tradeRow.target ?? "N/A"} | 🛑 SL: ₹${tradeRow.sl_trigger ?? "N/A"}\n` +
         `Source: ${source}`,
     );
 
