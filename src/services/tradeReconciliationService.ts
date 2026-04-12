@@ -73,14 +73,13 @@ export class TradeReconciliationService {
       const foreverOrders = await dhan.getForeverOrders();
       const regularOrders = await dhan.getOrders();
 
-      // ── Path A: AWAITING_ENTRY + holding exists ──
       const awaitingRes = await store.pg.query(
         `SELECT * FROM trades WHERE state = '${TradeState.AWAITING_ENTRY}' AND buy_order_id IS NOT NULL`,
       );
 
       for (const tradeRow of awaitingRes.rows) {
         const holding = holdings.find((h) => String(h.securityId) === String(tradeRow.security_id));
-
+        // ── Path A: AWAITING_ENTRY + holding exists ──
         if (holding && holding.totalQty > 0) {
           // Holding exists — entry happened while we were down
           const entryPrice =

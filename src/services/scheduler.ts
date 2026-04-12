@@ -31,6 +31,7 @@ import { AuditLogService } from "./auditLogService";
 import { InstrumentLookupService } from "./instrumentLookupService";
 import { ConfigService } from "./configService";
 import { TelegramService } from "./telegramService";
+import { HolidayService } from "./holidayService";
 import { LifecycleEvents } from "../enums/trade";
 
 export class Scheduler {
@@ -39,6 +40,10 @@ export class Scheduler {
   private enteredTradeTimers: NodeJS.Timeout[] = [];
   private closedTradesTimer: NodeJS.Timeout | null = null;
   private reconcileTimer: NodeJS.Timeout | null = null;
+  private marketClosedCheckTimer: NodeJS.Timeout | null = null;
+
+  /** Set daily at 09:00 IST — true if today is a weekend or holiday */
+  private marketClosedToday = false;
 
   // Pending entries: 10:00–14:00 (entries rarely trigger after 14:00)
   private static readonly PENDING_ENTRY_TIMES = ["10:00", "11:00", "12:00", "13:00", "14:00"];
@@ -62,6 +67,9 @@ export class Scheduler {
   start() {
     if (this.tradeScanTimer) return;
 
+    // 0. Schedule market-closed check at 09:00 IST (before anything else)
+    this.scheduleMarketClosedCheck();
+
     // 1. Schedule trade scan at 09:20 AM IST (Phase 2 only)
     this.scheduleTradeScan();
 
@@ -79,6 +87,7 @@ export class Scheduler {
 
     console.log(
       `Scheduler started:\n` +
+        `  Market check:    09:00 IST\n` +
         `  Trade scan:      09:20 IST\n` +
         `  Pending entries: ${Scheduler.PENDING_ENTRY_TIMES.join(", ")} IST\n` +
         `  Entered trades:  ${Scheduler.ENTERED_TRADE_TIMES.join(", ")} IST\n` +
@@ -103,6 +112,10 @@ export class Scheduler {
     if (this.reconcileTimer) {
       clearTimeout(this.reconcileTimer);
       this.reconcileTimer = null;
+    }
+    if (this.marketClosedCheckTimer) {
+      clearTimeout(this.marketClosedCheckTimer);
+      this.marketClosedCheckTimer = null;
     }
   }
 
@@ -227,6 +240,11 @@ export class Scheduler {
   }
 
   private async executePendingEntryMonitor(): Promise<void> {
+    if (this.marketClosedToday) {
+      console.log("  ⏸ Pending entry monitor skipped (market closed today)");
+      return;
+    }
+
     await backoff(
       async () => {
         const { store, audit, tokens, dhan, tradeMonitor } = await this.initServices();
@@ -273,6 +291,11 @@ export class Scheduler {
   }
 
   private async executeEnteredTradeMonitor(): Promise<void> {
+    if (this.marketClosedToday) {
+      console.log("  ⏸ Entered trade monitor skipped (market closed today)");
+      return;
+    }
+
     await backoff(
       async () => {
         const { store, audit, tokens, dhan, tradeMonitor } = await this.initServices();
@@ -313,6 +336,11 @@ export class Scheduler {
   }
 
   private async executeClosedTradesScan(): Promise<void> {
+    if (this.marketClosedToday) {
+      console.log("  ⏸ Closed trades scan skipped (market closed today)");
+      return;
+    }
+
     await backoff(
       async () => {
         const { store, audit, tokens, dhan, tradeSync, tradeReconciliation } =
@@ -380,6 +408,57 @@ export class Scheduler {
       },
       { retries: 3, baseMs: 250 },
     );
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Market Closed Check — 09:00 IST daily                             */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Runs at 09:00 IST daily (before any trading schedule).
+   * Queries the market_holidays table and sets `marketClosedToday`.
+   * Sends a Telegram notification for named holidays (not weekends).
+   */
+  private scheduleMarketClosedCheck(): void {
+    this.marketClosedCheckTimer = this.scheduleAtIST("09:00", async () => {
+      await this.executeMarketClosedCheck().catch(() => {});
+      this.scheduleMarketClosedCheck(); // re-schedule for next day
+    });
+    this.logSchedule("Market closed check", "09:00");
+  }
+
+  private async executeMarketClosedCheck(): Promise<void> {
+    const store = new StateStore(this.cfg);
+
+    try {
+      await store.connect();
+      const holidaySvc = new HolidayService(store.pg);
+      const result = await holidaySvc.isMarketClosed();
+
+      this.marketClosedToday = result.closed;
+
+      if (result.closed) {
+        console.log(`📅 Market closed today: ${result.reason}`);
+
+        // Only notify via Telegram for named holidays, skip weekends silently
+        if (result.type === "holiday") {
+          const today = DateTime.now().setZone("Asia/Kolkata").toFormat("dd-MMM-yyyy");
+          await this.telegram.notify(
+            `📅 *Market closed today* — ${result.reason} \\(${today}\\)\n\n` +
+              `Trading schedules are paused for the day\\.`,
+            "MarkdownV2",
+          );
+        }
+      } else {
+        console.log("✅ Market open today — all schedules active");
+      }
+    } catch (err: any) {
+      // On error, assume market is open (fail-open for safety)
+      this.marketClosedToday = false;
+      console.error("Market closed check failed (assuming open):", err?.message);
+    } finally {
+      await store.disconnect();
+    }
   }
 
   /* ------------------------------------------------------------------ */
