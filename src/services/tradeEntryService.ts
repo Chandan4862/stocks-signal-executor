@@ -279,7 +279,7 @@ export class TradeEntryService {
     const executionLimitPrice = Number((triggerPrice * 1.005).toFixed(1));
 
     const req: PlaceForeverOrderRequest = {
-      dhanClientId: this.cfg.dhan.clientId,
+      dhanClientId: this.cfg.dhan?.clientId ?? "",
       correlationId: `buy_${v.id}`.slice(0, 30),
       orderFlag: "SINGLE",
       transactionType: "BUY",

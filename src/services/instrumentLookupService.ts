@@ -5,10 +5,10 @@
  * Single Responsibility: instrument identity resolution only.
  */
 
-import type { Client } from "pg";
+import type { Client, Pool } from "pg";
 
 export class InstrumentLookupService {
-  constructor(private pg: Client) {}
+  constructor(private pg: Client | Pool) {}
 
   /**
    * Look up the Dhan security_id for an NSE equity symbol.

@@ -19,7 +19,9 @@ const baseCfg = {
     closedTradesUrl: "http://test/closed",
   },
   postgres: { host: "", port: 5432, database: "", user: "", password: "" },
+  redis: { host: "localhost", port: 6379, db: 0 },
   telegram: { botToken: "tok", defaultChatId: "chat" },
+  masterEncryptionKey: "test-master-key-32-chars-long-ok!",
   pollingIntervalMs: 1000,
   maxTradeCapital: 100000,
   perTradeCapital: 10000,
@@ -58,7 +60,7 @@ function createStore(cfg: any, localTrades: Record<number, any> = {}) {
 
     constructor() {
       super(cfg);
-      (this as any).pg = {
+      (this as any).pool = {
         query: async (sql: string, params: any[] = []) => {
           executedQueries.push({ sql, params });
 

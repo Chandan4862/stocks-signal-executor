@@ -220,9 +220,18 @@ export class DhanService {
 
   constructor(
     private cfg: AppConfig,
-    private tokens: TokenService,
+    private tokens: TokenService | null,
     private audit: AuditLogService,
   ) {}
+
+  /**
+   * Directly set the access token (used by workers with per-user tokens from Redis).
+   * Bypasses TokenService entirely.
+   */
+  setToken(token: string): void {
+    this.currentToken = token;
+    this.http = undefined; // Force re-creation with new token
+  }
 
   /* ------------------------------------------------------------------ */
   /*  HTTP client with auto-refresh on 401                               */
@@ -234,7 +243,8 @@ export class DhanService {
    * client is re-created with the new token.
    */
   private async ensureHttp(forceRefresh = false): Promise<AxiosInstance> {
-    const token = await this.tokens.getToken();
+    // If TokenService is available, use it. Otherwise use directly-set token.
+    const token = this.tokens ? await this.tokens.getToken() : this.currentToken;
     if (!token) throw new Error("Missing Dhan access token — trading paused");
 
     // Re-create client if token changed or forced
@@ -299,7 +309,9 @@ export class DhanService {
               error: "401/403 received — refreshing token and retrying",
             })
             .catch(() => {});
-          await this.tokens.invalidateToken();
+          if (this.tokens) {
+            await this.tokens.invalidateToken();
+          }
           this.http = undefined;
           const http = await this.ensureHttp();
           return await fn(http); // retry once; let it throw if still fails
@@ -386,7 +398,7 @@ export class DhanService {
   ): Promise<PlaceOrderResponse> {
     return this.withAuthRetry(async (http) => {
       const body: any = {
-        dhanClientId: this.cfg.dhan.clientId,
+        dhanClientId: this.cfg.dhan?.clientId ?? "",
         orderId,
         ...req,
       };

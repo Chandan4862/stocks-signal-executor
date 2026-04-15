@@ -125,7 +125,7 @@ export class TokenService {
     const tried: string[] = [];
     if (this.cachedToken) tried.push("in-memory (expired)");
     if (dbRow) tried.push("DB token (invalid/expired)");
-    if (this.cfg.dhan.pin && this.cfg.dhan.totpSecret) tried.push("TOTP auto-gen (failed)");
+    if (this.cfg.dhan?.pin && this.cfg.dhan?.totpSecret) tried.push("TOTP auto-gen (failed)");
     else tried.push("TOTP (not configured)");
 
     await this.audit.critical(LifecycleEvents.ERROR_OCCURRED, {
@@ -246,7 +246,7 @@ export class TokenService {
       const { data } = await axios.get<RenewTokenResponse>(`${DHAN_API_BASE}/RenewToken`, {
         headers: {
           "access-token": currentToken,
-          dhanClientId: this.cfg.dhan.clientId,
+          dhanClientId: this.cfg.dhan?.clientId ?? "",
         },
         timeout: 10_000,
       });
@@ -290,8 +290,8 @@ export class TokenService {
   // (like Google Authenticator) would show — without human intervention.
 
   async generateViaTotp(): Promise<string | null> {
-    const pin = this.cfg.dhan.pin;
-    const totpSecret = this.cfg.dhan.totpSecret;
+    const pin = this.cfg.dhan?.pin;
+    const totpSecret = this.cfg.dhan?.totpSecret;
 
     if (!pin || !totpSecret) {
       this.audit
@@ -312,7 +312,7 @@ export class TokenService {
         null,
         {
           params: {
-            dhanClientId: this.cfg.dhan.clientId,
+            dhanClientId: this.cfg.dhan?.clientId ?? "",
             pin,
             totp,
           },
@@ -342,7 +342,7 @@ export class TokenService {
         action: "TokenService.generateViaTotp",
         url: `POST ${DHAN_AUTH_BASE}/app/generateAccessToken`,
         requestBody: {
-          dhanClientId: this.cfg.dhan.clientId,
+          dhanClientId: this.cfg.dhan?.clientId ?? "***",
           pin: "***",
           totp: "(generated)",
         },

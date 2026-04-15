@@ -126,7 +126,7 @@ export class TradeHelpers {
     try {
       // Place Market SELL
       const sellReq: PlaceOrderRequest = {
-        dhanClientId: cfg.dhan.clientId,
+        dhanClientId: cfg.dhan?.clientId ?? "",
         correlationId: `sell_${tradeRow.id}`.slice(0, 30),
         transactionType: "SELL",
         exchangeSegment: "NSE_EQ",

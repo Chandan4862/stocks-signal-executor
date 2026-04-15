@@ -9,7 +9,7 @@
    CRITICAL → console + Postgres + Telegram (🔴 prefix)
 */
 
-import type { Client } from "pg";
+import type { Client, Pool } from "pg";
 import { LifecycleEvents, LogLevel } from "../enums/trade";
 
 /** Telegram notifier interface — avoids circular dependency on TelegramService */
@@ -35,12 +35,23 @@ const LEVEL_EMOJI: Record<LogLevel, string> = {
 };
 
 export class AuditLogService {
-  private pg: Client | null;
+  private pg: Client | Pool | null;
   private telegram: TelegramNotifier | null;
+  private userId: number | null;
 
-  constructor(pg?: Client | null, telegram?: TelegramNotifier | null) {
+  constructor(
+    pg?: Client | Pool | null,
+    telegram?: TelegramNotifier | null,
+    userId?: number | null,
+  ) {
     this.pg = pg ?? null;
     this.telegram = telegram ?? null;
+    this.userId = userId ?? null;
+  }
+
+  /** Create a user-scoped copy of this service. */
+  forUser(userId: number): AuditLogService {
+    return new AuditLogService(this.pg, this.telegram, userId);
   }
 
   /**
@@ -82,8 +93,8 @@ export class AuditLogService {
     if (this.pg && level >= LogLevel.INFO) {
       try {
         await this.pg.query(
-          `INSERT INTO audit_logs (trade_id, event, level, payload) VALUES ($1, $2, $3, $4)`,
-          [tradeId, event, label, JSON.stringify(payload)],
+          `INSERT INTO audit_logs (trade_id, event, level, payload, user_id) VALUES ($1, $2, $3, $4, $5)`,
+          [tradeId, event, label, JSON.stringify(payload), this.userId],
         );
       } catch (err: any) {
         console.error("AuditLogService: DB write failed:", err?.message);

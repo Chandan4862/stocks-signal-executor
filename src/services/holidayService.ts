@@ -7,7 +7,7 @@
  */
 
 import { DateTime } from "luxon";
-import type { Client } from "pg";
+import type { Client, Pool } from "pg";
 
 export interface MarketClosedResult {
   /** true if market is closed (weekend or holiday) */
@@ -21,7 +21,7 @@ export interface MarketClosedResult {
 export class HolidayService {
   private static readonly IST = "Asia/Kolkata";
 
-  constructor(private pg: Client) {}
+  constructor(private pg: Client | Pool) {}
 
   /**
    * Check if a specific date is a market holiday (from DB).

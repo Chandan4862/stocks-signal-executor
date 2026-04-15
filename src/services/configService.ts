@@ -12,7 +12,7 @@
     await configSvc.set('per_trade_capital', '3000');  // update DB + cache
 */
 
-import type { Client } from "pg";
+import type { Client, Pool } from "pg";
 
 /** All recognised config keys and their default values. */
 const DEFAULTS: Record<string, string> = {
@@ -38,7 +38,7 @@ export class ConfigService {
   /** In-memory cache of config values. */
   private cache: Map<string, string> = new Map();
 
-  constructor(private pg: Client) {}
+  constructor(private pg: Client | Pool) {}
 
   /* ------------------------------------------------------------------ */
   /*  Load / Refresh                                                     */
@@ -63,6 +63,58 @@ export class ConfigService {
       }
     } catch (err: any) {
       console.error("ConfigService: failed to load from DB, using defaults:", err?.message);
+    }
+  }
+
+  /**
+   * Load global defaults + per-user overrides from user_config table.
+   * Call this in worker context where each job operates on a specific user.
+   */
+  async loadForUser(userId: number): Promise<void> {
+    // Load global config first
+    await this.load();
+
+    // Then overlay user-specific overrides
+    try {
+      const res = await this.pg.query("SELECT key, value FROM user_config WHERE user_id = $1", [
+        userId,
+      ]);
+      for (const row of res.rows) {
+        this.cache.set(row.key, row.value);
+      }
+    } catch (err: any) {
+      console.error(`ConfigService: failed to load user_config for user ${userId}:`, err?.message);
+    }
+  }
+
+  /**
+   * Set a per-user config override.
+   */
+  async setForUser(
+    userId: number,
+    key: string,
+    value: string,
+  ): Promise<{ ok: boolean; message: string }> {
+    if (!DEFAULTS[key]) {
+      const validKeys = Object.keys(DEFAULTS).join(", ");
+      return { ok: false, message: `Unknown key "${key}".\nValid keys: ${validKeys}` };
+    }
+
+    const parsed = Number(value);
+    if (isNaN(parsed) || parsed <= 0) {
+      return { ok: false, message: `Invalid value "${value}" — must be a positive number.` };
+    }
+
+    try {
+      await this.pg.query(
+        `INSERT INTO user_config (user_id, key, value, updated_at) VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+        [userId, key, value],
+      );
+      this.cache.set(key, value);
+      return { ok: true, message: `✅ ${key} updated to ${value}` };
+    } catch (err: any) {
+      return { ok: false, message: `DB error: ${err?.message ?? "unknown"}` };
     }
   }
 

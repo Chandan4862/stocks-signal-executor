@@ -3,20 +3,22 @@
 # A local .env does not get overwritten by .env.docker or vice versa — they serve different purposes.
 
 services:
+  # ── App: Telegram bot + Scheduler (singleton) ──
   stock_app:
-    # Production: uses compiled JS from Dockerfile (multi-stage build)
     build:
       context: .
     container_name: stocks-executor-app
     env_file:
       - .env
     environment:
+      ROLE: app
       PG_HOST: stock_postgres
       PG_PORT: 5432
       PG_DATABASE: ${PG_DATABASE:-stocks_executor}
       PG_USER: ${PG_USER:-postgres}
       PG_PASSWORD: ${PG_PASSWORD:-postgres}
-      POLLING_INTERVAL_MS: ${POLLING_INTERVAL_MS:-15000}
+      REDIS_HOST: stock_redis
+      REDIS_PORT: 6379
       DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASSWORD:-postgres}@stock_postgres:5432/${PG_DATABASE:-stocks_executor}
     command:
       [
@@ -27,8 +29,47 @@ services:
     depends_on:
       stock_postgres:
         condition: service_healthy
+      stock_redis:
+        condition: service_healthy
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1"
+          memory: 4G
     restart: unless-stopped
 
+  # ── Workers: BullMQ job processors (scalable) ──
+  stock_worker:
+    build:
+      context: .
+    container_name: stocks-executor-worker
+    env_file:
+      - .env
+    environment:
+      ROLE: worker
+      PG_HOST: stock_postgres
+      PG_PORT: 5432
+      PG_DATABASE: ${PG_DATABASE:-stocks_executor}
+      PG_USER: ${PG_USER:-postgres}
+      PG_PASSWORD: ${PG_PASSWORD:-postgres}
+      REDIS_HOST: stock_redis
+      REDIS_PORT: 6379
+    command: ["node", "dist/workerMain.js"]
+    depends_on:
+      stock_postgres:
+        condition: service_healthy
+      stock_redis:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "1"
+          memory: 4G
+    restart: unless-stopped
+
+  # ── PostgreSQL ──
   stock_postgres:
     image: postgres:16-alpine
     container_name: stocks-executor-postgres
@@ -45,8 +86,45 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 6G
+    restart: unless-stopped
+
+  # ── Redis ──
+  stock_redis:
+    image: redis:7-alpine
+    container_name: stocks-executor-redis
+    command:
+      [
+        "redis-server",
+        "--maxmemory",
+        "1gb",
+        "--maxmemory-policy",
+        "allkeys-lru",
+        "--appendonly",
+        "yes",
+      ]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 2G
     restart: unless-stopped
 
 volumes:
   postgres-data:
+    driver: local
+  redis-data:
     driver: local

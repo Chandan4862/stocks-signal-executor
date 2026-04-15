@@ -8,11 +8,13 @@ export function loadConfig(): AppConfig {
   const env = process.env;
 
   const parseResult = AppConfigSchema.safeParse({
-    dhan: {
-      clientId: env.DHAN_CLIENT_ID,
-      pin: env.DHAN_PIN || undefined,
-      totpSecret: env.DHAN_TOTP_SECRET || undefined,
-    },
+    dhan: env.DHAN_CLIENT_ID
+      ? {
+          clientId: env.DHAN_CLIENT_ID,
+          pin: env.DHAN_PIN || undefined,
+          totpSecret: env.DHAN_TOTP_SECRET || undefined,
+        }
+      : undefined,
     apis: {
       activeTradesUrl: env.ACTIVE_TRADES_URL,
       closedTradesUrl: env.CLOSED_TRADES_URL,
@@ -24,11 +26,18 @@ export function loadConfig(): AppConfig {
       user: env.PG_USER,
       password: env.PG_PASSWORD,
     },
+    redis: {
+      host: env.REDIS_HOST || "localhost",
+      port: Number(env.REDIS_PORT || 6379),
+      password: env.REDIS_PASSWORD || undefined,
+      db: Number(env.REDIS_DB || 0),
+    },
     telegram: {
       botToken: env.TELEGRAM_BOT_TOKEN,
       defaultChatId: env.TELEGRAM_CHAT_ID,
       tradesChatId: env.TELEGRAM_TRADES_CHAT_ID || undefined,
     },
+    masterEncryptionKey: env.MASTER_ENCRYPTION_KEY,
     postbackPort: env.POSTBACK_PORT ? Number(env.POSTBACK_PORT) : undefined,
     env: (env.NODE_ENV as any) || "development",
   });
