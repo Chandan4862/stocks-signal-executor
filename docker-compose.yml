@@ -19,6 +19,9 @@ services:
       PG_DATABASE: ${PG_DATABASE:-stocks_executor}
       PG_USER: ${PG_USER:-postgres}
       PG_PASSWORD: ${PG_PASSWORD:-postgres}
+      REDIS_HOST: stock_redis
+      REDIS_PORT: 6379
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-dev-master-key-32-chars-minimum!!}
       POLLING_INTERVAL_MS: ${POLLING_INTERVAL_MS:-15000}
       DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASSWORD:-postgres}@stock_postgres:5432/${PG_DATABASE:-stocks_executor}
     volumes:
@@ -27,6 +30,41 @@ services:
     command: ["sh", "-lc", "[ -d node_modules ] || npm ci; npm run migrate:up && npm run dev:watch"]
     depends_on:
       stock_postgres:
+        condition: service_healthy
+      stock_redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Worker: BullMQ job processor (dev mode — single replica with hot-reload)
+  stock_worker:
+    build:
+      context: .
+      target: builder
+    container_name: stocks-executor-worker
+    env_file:
+      - .env
+    environment:
+      PG_HOST: stock_postgres
+      PG_PORT: 5432
+      PG_DATABASE: ${PG_DATABASE:-stocks_executor}
+      PG_USER: ${PG_USER:-postgres}
+      PG_PASSWORD: ${PG_PASSWORD:-postgres}
+      REDIS_HOST: stock_redis
+      REDIS_PORT: 6379
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-dev-master-key-32-chars-minimum!!}
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+    command:
+      [
+        "sh",
+        "-lc",
+        "[ -d node_modules ] || npm ci; npx nodemon --exec 'npx ts-node src/workerMain.ts' --ext ts --watch src",
+      ]
+    depends_on:
+      stock_postgres:
+        condition: service_healthy
+      stock_redis:
         condition: service_healthy
     restart: unless-stopped
 
@@ -48,6 +86,22 @@ services:
       retries: 10
     restart: unless-stopped
 
+  stock_redis:
+    image: redis:7-alpine
+    container_name: stocks-executor-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
 volumes:
   postgres-data:
   node_modules:
+  redis-data:

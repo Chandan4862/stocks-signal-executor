@@ -6,7 +6,7 @@
 
 import type { Queue } from "bullmq";
 import type { UserContext } from "../middleware/userResolver";
-import type { UserService } from "../../modules/user/userService";
+import type { UserRepository } from "../../modules/user/userRepository";
 import type Redis from "ioredis";
 import type { TradeExecutionJob, TradeMonitorJob, ReconciliationJob } from "../../queues/jobs";
 import { makeJobId, todayKey } from "../../queues/jobs";
@@ -15,7 +15,7 @@ import { DateTime } from "luxon";
 
 export class TradingHandler {
   constructor(
-    private userService: UserService,
+    private userRepo: UserRepository,
     private redis: Redis,
     private queues: Map<string, Queue>,
   ) {}
@@ -45,7 +45,7 @@ export class TradingHandler {
       return;
     }
 
-    await this.userService.setTradingEnabled(user.id, true);
+    await this.userRepo.setTradingEnabled(user.id, true);
     await ctx.reply(
       "🟢 Auto-trading ENABLED.\n" +
         "You'll receive signals starting next market open (09:20 IST).",
@@ -57,7 +57,7 @@ export class TradingHandler {
     const user = ctx.state.user;
     if (!user) return;
 
-    await this.userService.setTradingEnabled(user.id, false);
+    await this.userRepo.setTradingEnabled(user.id, false);
     await ctx.reply(
       "🔴 Auto-trading DISABLED.\n" +
         "Existing positions remain open. No new trades will be placed.",
@@ -71,8 +71,8 @@ export class TradingHandler {
 
     const token = await this.redis.get(`token:${user.id}`);
     const tokenTTL = token ? await this.redis.ttl(`token:${user.id}`) : 0;
-    const activeTrades = await this.userService.countActiveTrades(user.id);
-    const capital = await this.userService.getDeployedCapital(user.id);
+    const activeTrades = await this.userRepo.countActiveTradesForUser(user.id);
+    const capital = await this.userRepo.getDeployedCapitalForUser(user.id);
 
     const tokenStatus = token
       ? `✅ Valid (expires in ${Math.round(tokenTTL / 3600)}h)`

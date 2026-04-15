@@ -22,6 +22,9 @@ import { AuditLogService } from "./auditLogService";
 import { ConfigService } from "./configService";
 import { LifecycleEvents } from "../enums/trade";
 import type { Scheduler } from "./scheduler";
+import type { UserResolverMiddleware, UserContext } from "../telegram/middleware/userResolver";
+import type { OnboardingHandler } from "../telegram/handlers/onboardingHandler";
+import type { TradingHandler } from "../telegram/handlers/tradingHandler";
 
 export class TelegramService {
   private bot: Telegraf;
@@ -69,6 +72,18 @@ export class TelegramService {
    */
   setConfigService(configSvc: ConfigService): void {
     this.configService = configSvc;
+  }
+
+  /**
+   * Inject multi-user handlers (user resolver + onboarding + trading).
+   * Must be called before launch() to register commands.
+   */
+  setMultiUserHandlers(
+    userResolver: UserResolverMiddleware,
+    onboarding: OnboardingHandler,
+    trading: TradingHandler,
+  ): void {
+    this.registerMultiUserHandlers(userResolver, onboarding, trading);
   }
 
   /* ------------------------------------------------------------------ */
@@ -393,6 +408,32 @@ export class TelegramService {
     });
 
     // Silently ignore all unrecognised messages — no reply to unauthorized users
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Multi-user command handlers (registered via setMultiUserHandlers)   */
+  /* ------------------------------------------------------------------ */
+
+  private registerMultiUserHandlers(
+    userResolver: UserResolverMiddleware,
+    onboarding: OnboardingHandler,
+    trading: TradingHandler,
+  ): void {
+    // User resolver middleware — attaches user to ctx.state for all subsequent handlers
+    this.bot.use(userResolver.middleware() as any);
+
+    // Onboarding commands
+    this.bot.command("register", (ctx) => onboarding.handleRegister(ctx as unknown as UserContext));
+    this.bot.command("setup_broker", (ctx) =>
+      onboarding.handleSetupBroker(ctx as unknown as UserContext),
+    );
+    this.bot.command("setup_totp", (ctx) =>
+      onboarding.handleSetupTotp(ctx as unknown as UserContext),
+    );
+
+    // Trading commands (multi-user)
+    this.bot.command("enable", (ctx) => trading.handleEnable(ctx as unknown as UserContext));
+    this.bot.command("disable", (ctx) => trading.handleDisable(ctx as unknown as UserContext));
   }
 
   /* ------------------------------------------------------------------ */

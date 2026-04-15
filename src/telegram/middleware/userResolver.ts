@@ -5,8 +5,7 @@
 */
 
 import type { Context, MiddlewareFn } from "telegraf";
-import type { UserService } from "../../modules/user/userService";
-import type { UserRow } from "../../modules/user/userRepository";
+import type { UserRepository, UserRow } from "../../modules/user/userRepository";
 
 /** Extend Telegraf context with user state */
 export interface UserContext extends Context {
@@ -18,30 +17,35 @@ export interface UserContext extends Context {
 /** Commands that don't require an existing user */
 const PUBLIC_COMMANDS = ["/start", "/register"];
 
-export function createUserResolverMiddleware(userService: UserService): MiddlewareFn<UserContext> {
-  return async (ctx, next) => {
-    const chatId = String(ctx.chat?.id ?? "");
-    if (!chatId) {
+export class UserResolverMiddleware {
+  constructor(private userRepo: UserRepository) {}
+
+  /** Returns the Telegraf middleware function. */
+  middleware(): MiddlewareFn<UserContext> {
+    return async (ctx, next) => {
+      const chatId = String(ctx.chat?.id ?? "");
+      if (!chatId) {
+        return next();
+      }
+
+      // Resolve user from DB
+      const user = await this.userRepo.findByTelegramChatId(chatId);
+      ctx.state = ctx.state || {};
+      ctx.state.user = user;
+
+      // Allow public commands for unregistered users
+      const messageText = (ctx.message as any)?.text ?? "";
+      const command = messageText.split(" ")[0]?.toLowerCase();
+
+      if (!user && !PUBLIC_COMMANDS.includes(command)) {
+        await ctx.reply(
+          "👋 Welcome! You're not registered yet.\n" +
+            "Send /start to begin setting up your trading account.",
+        );
+        return;
+      }
+
       return next();
-    }
-
-    // Resolve user from cache/DB
-    const user = await userService.findByTelegramChatId(chatId);
-    ctx.state = ctx.state || {};
-    ctx.state.user = user;
-
-    // Allow public commands for unregistered users
-    const messageText = (ctx.message as any)?.text ?? "";
-    const command = messageText.split(" ")[0]?.toLowerCase();
-
-    if (!user && !PUBLIC_COMMANDS.includes(command)) {
-      await ctx.reply(
-        "👋 Welcome! You're not registered yet.\n" +
-          "Send /start to begin setting up your trading account.",
-      );
-      return;
-    }
-
-    return next();
-  };
+    };
+  }
 }

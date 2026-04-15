@@ -1,5 +1,4 @@
 import "dotenv/config";
-import { Client } from "pg";
 import { loadConfig } from "./config";
 import { Scheduler } from "./services/scheduler";
 import { TelegramService } from "./services/telegramService";
@@ -8,35 +7,70 @@ import { PostbackService } from "./services/postbackService";
 import { StateStore } from "./services/stateStore";
 import { TokenService } from "./services/tokenService";
 import { ConfigService } from "./services/configService";
+import { getRedis, closeRedis } from "./services/redisProvider";
+import { createQueues, closeQueues } from "./queues/queueRegistry";
+import { UserRepository } from "./modules/user/userRepository";
+import { UserService } from "./modules/user/userService";
+import { CredentialVault } from "./modules/auth/credentialVault";
+import { OnboardingHandler } from "./telegram/handlers/onboardingHandler";
+import { TradingHandler } from "./telegram/handlers/tradingHandler";
+import { UserResolverMiddleware } from "./telegram/middleware/userResolver";
+import { Client } from "pg";
 
 async function main() {
   const config = loadConfig();
 
-  // --- Telegram bot ---
+  // --- Postgres (long-lived pool) ---
+  const store = new StateStore(config);
+  await store.connect();
+  console.log("✅ Postgres pool connected");
+
+  // --- Redis ---
+  const redis = getRedis(config);
+  console.log("✅ Redis initialized");
+
+  // --- BullMQ Queues ---
+  const queues = createQueues(redis);
+  console.log(`✅ ${queues.size} BullMQ queues created`);
+
+  // --- Audit (global, with PG + Telegram) ---
   const telegram = new TelegramService(
     config.telegram.botToken,
     config.telegram.defaultChatId,
     config.telegram.tradesChatId,
   );
-  await telegram.launch();
+  const audit = new AuditLogService(store.pg, telegram);
 
-  // --- Boot TokenService early so /status, /token, /renew work immediately ---
-  const bootStore = new StateStore(config);
-  await bootStore.connect();
-  const bootAudit = new AuditLogService(bootStore.pg, telegram);
-  const tokenService = new TokenService(config, bootStore, bootAudit);
-  telegram.setTokenService(tokenService);
-  telegram.setAudit(bootAudit);
-
-  // --- ConfigService (long-lived, backed by bootStore PG) ---
-  const configSvc = new ConfigService(bootStore.pg);
+  // --- ConfigService (long-lived, backed by PG pool) ---
+  const configSvc = new ConfigService(store.pg);
   await configSvc.load();
   telegram.setConfigService(configSvc);
 
-  // --- Scheduler ---
-  const scheduler = new Scheduler(config, telegram, configSvc);
+  // --- Token Service (for legacy single-user /token + /renew commands) ---
+  const tokenService = new TokenService(config, store, audit);
+  telegram.setTokenService(tokenService);
+  telegram.setAudit(audit);
+
+  // --- Multi-tenant services ---
+  const userRepo = new UserRepository(store.pool);
+  const vault = new CredentialVault(config.masterEncryptionKey);
+  const userService = new UserService(userRepo, vault, redis);
+
+  // --- Telegram multi-user handlers ---
+  const userResolver = new UserResolverMiddleware(userRepo);
+  const onboardingHandler = new OnboardingHandler(userService, vault, redis);
+  const tradingHandler = new TradingHandler(userRepo, redis, queues);
+
+  // Wire handlers into TelegramService
+  telegram.setMultiUserHandlers(userResolver, onboardingHandler, tradingHandler);
+
+  // --- Scheduler (enqueue-only) ---
+  const scheduler = new Scheduler(config, telegram, configSvc, queues, store, redis);
   telegram.setScheduler(scheduler);
   scheduler.start();
+
+  // --- Launch Telegram bot ---
+  await telegram.launch();
 
   // --- Postback Webhook Server (optional) ---
   let postback: PostbackService | undefined;
@@ -63,7 +97,10 @@ async function main() {
     scheduler.stop();
     if (postback) await postback.stop();
     if (postbackPg) await postbackPg.end();
+    await closeQueues(queues);
     await telegram.stop(signal);
+    await store.disconnect();
+    await closeRedis();
     process.exit(0);
   };
 

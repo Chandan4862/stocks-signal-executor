@@ -1,38 +1,44 @@
 /*
-  Scheduler: Three-cadence execution model.
+  Scheduler: Multi-tenant enqueue-only model.
 
-  Trade scan (9:30 AM IST + /trade command):
-    - Phase 2: runBuyAndInitialSl     (analyst active trades)
+  Instead of executing trades directly, the scheduler now:
+  1. Fetches shared signals (active/closed trades from analyst API)
+  2. Looks up all active users with trading enabled
+  3. Enqueues per-user jobs into BullMQ queues
 
-  Monitor (hourly: 10:00–15:00 IST + /monitor command):
-    - Phase 3: monitorPendingEntries  (Dhan order status)
-    - Phase 5: monitorEnteredTrades   (holdings-based sell)
+  Workers (separate process) pick up and execute the jobs.
 
-  Closed trades scan (15:00 IST):
-    - Phase 4: processClosedTrades    (analyst closed trades)
-
-  Reconcile (once/day — 16:00 IST, after market close):
-    - Phase 6: reconcilePositions     (safety net)
+  Cadences remain the same:
+    09:00 — Market closed check
+    09:20 — Trade scan → signal-fanout → per-user trade-execution jobs
+    10:00–14:00 — Pending entry monitor → per-user trade-monitor jobs
+    11:00–15:00 — Entered trade monitor → per-user trade-monitor jobs
+    14:30 — Closed trades scan → per-user reconciliation jobs
+    16:00 — Position reconciliation → per-user reconciliation jobs
 */
 
 import { DateTime } from "luxon";
+import type { Queue } from "bullmq";
+import type Redis from "ioredis";
 import type { AppConfig } from "../config/schema";
 import { backoff } from "../utils/retry";
 import { StateStore } from "./stateStore";
-import { DhanService } from "./dhanService";
-import { TokenService } from "./tokenService";
 import { TradeSyncService } from "./tradeSyncService";
-import { TradeEntryService } from "./tradeEntryService";
-import { TradeMonitorService } from "./tradeMonitorService";
-import { TradeReconciliationService } from "./tradeReconciliationService";
-import { QuantityResolverService } from "./quantityResolverService";
-import { TSLService } from "./tslService";
 import { AuditLogService } from "./auditLogService";
-import { InstrumentLookupService } from "./instrumentLookupService";
+import { HolidayService } from "./holidayService";
 import { ConfigService } from "./configService";
 import { TelegramService } from "./telegramService";
-import { HolidayService } from "./holidayService";
 import { LifecycleEvents } from "../enums/trade";
+import { UserRepository } from "../modules/user/userRepository";
+import { QUEUE_NAMES, type QueueName } from "../queues/queueRegistry";
+import {
+  makeJobId,
+  todayKey,
+  type TradeExecutionJob,
+  type TradeMonitorJob,
+  type ReconciliationJob,
+  type TokenRenewalJob,
+} from "../queues/jobs";
 
 export class Scheduler {
   private tradeScanTimer: NodeJS.Timeout | null = null;
@@ -41,6 +47,7 @@ export class Scheduler {
   private closedTradesTimer: NodeJS.Timeout | null = null;
   private reconcileTimer: NodeJS.Timeout | null = null;
   private marketClosedCheckTimer: NodeJS.Timeout | null = null;
+  private tokenRenewalTimer: NodeJS.Timeout | null = null;
 
   /** Set daily at 09:00 IST — true if today is a weekend or holiday */
   private marketClosedToday = false;
@@ -58,6 +65,9 @@ export class Scheduler {
     private cfg: AppConfig,
     private telegram: TelegramService,
     private configSvc: ConfigService,
+    private queues: Map<QueueName, Queue>,
+    private store: StateStore,
+    private redis: Redis,
   ) {}
 
   /* ------------------------------------------------------------------ */
@@ -67,27 +77,31 @@ export class Scheduler {
   start() {
     if (this.tradeScanTimer) return;
 
-    // 0. Schedule market-closed check at 09:00 IST (before anything else)
+    // 0. Schedule market-closed check at 09:00 IST
     this.scheduleMarketClosedCheck();
 
-    // 1. Schedule trade scan at 09:20 AM IST (Phase 2 only)
+    // 1. Schedule trade scan at 09:20 AM IST
     this.scheduleTradeScan();
 
-    // 2. Schedule pending entry monitor (Phase 3) — 10:00–14:00
+    // 2. Schedule pending entry monitor — 10:00–14:00
     this.schedulePendingEntryMonitor();
 
-    // 3. Schedule entered trade monitor (Phase 5) — 11:00–15:00
+    // 3. Schedule entered trade monitor — 11:00–15:00
     this.scheduleEnteredTradeMonitor();
 
-    // 4. Schedule closed trades scan (Phase 4) at 14:30 IST
+    // 4. Schedule closed trades scan at 14:30 IST
     this.scheduleClosedTradesScan();
 
-    // 5. Schedule reconciliation (Phase 6) once after market close
+    // 5. Schedule reconciliation at 16:00 IST
     this.scheduleReconciliation();
 
+    // 6. Schedule daily token renewal at 08:00 IST
+    this.scheduleTokenRenewal();
+
     console.log(
-      `Scheduler started:\n` +
+      `Scheduler started (enqueue-only mode):\n` +
         `  Market check:    09:00 IST\n` +
+        `  Token renewal:   08:00 IST\n` +
         `  Trade scan:      09:20 IST\n` +
         `  Pending entries: ${Scheduler.PENDING_ENTRY_TIMES.join(", ")} IST\n` +
         `  Entered trades:  ${Scheduler.ENTERED_TRADE_TIMES.join(", ")} IST\n` +
@@ -117,223 +131,160 @@ export class Scheduler {
       clearTimeout(this.marketClosedCheckTimer);
       this.marketClosedCheckTimer = null;
     }
+    if (this.tokenRenewalTimer) {
+      clearTimeout(this.tokenRenewalTimer);
+      this.tokenRenewalTimer = null;
+    }
   }
 
   /* ------------------------------------------------------------------ */
-  /*  Trade Scan — Phase 2 (analyst active trades, runs at 9:30 AM)     */
+  /*  Trade Scan — Fan out signals to per-user execution jobs            */
   /* ------------------------------------------------------------------ */
 
-  /**
-   * Public: trigger trade scan manually (called by Telegram /trade command).
-   * Runs Phase 2 only (fetch active trades, place Forever BUY orders).
-   */
   async runTradeScan(): Promise<string> {
     try {
       await this.executeTradeScan();
-      return "✅ Trade scan completed successfully.";
+      return "✅ Trade scan completed — jobs enqueued for all active users.";
     } catch (err: any) {
       return `❌ Trade scan failed: ${err?.message ?? "unknown error"}`;
     }
   }
 
-  /**
-   * Public: trigger monitor manually (called by Telegram /monitor command).
-   * Runs Phases 3 + 5 (pending entries + holdings-based sell).
-   */
   async runMonitor(): Promise<string> {
     try {
-      await this.executePendingEntryMonitor();
-      await this.executeEnteredTradeMonitor();
-      return "✅ Monitor tick completed successfully.";
+      await this.enqueueMonitorJobs("PENDING_ENTRIES");
+      await this.enqueueMonitorJobs("ENTERED_TRADES");
+      return "✅ Monitor jobs enqueued for all active users.";
     } catch (err: any) {
-      return `❌ Monitor failed: ${err?.message ?? "unknown error"}`;
+      return `❌ Monitor enqueue failed: ${err?.message ?? "unknown error"}`;
     }
   }
 
-  /**
-   * Public: trigger reconciliation manually (called by Telegram /reconcile command).
-   * Runs Phase 6 (holdings reconciliation).
-   */
   async runReconciliation(): Promise<string> {
     try {
-      await this.executeReconciliation();
-      return "✅ Reconciliation completed successfully.";
+      await this.enqueueReconciliationJobs("POSITION_RECONCILE");
+      return "✅ Reconciliation jobs enqueued for all active users.";
     } catch (err: any) {
-      return `❌ Reconciliation failed: ${err?.message ?? "unknown error"}`;
+      return `❌ Reconciliation enqueue failed: ${err?.message ?? "unknown error"}`;
     }
   }
+
+  /* ------------------------------------------------------------------ */
+  /*  Signal Fanout: Fetch signals → enqueue per-user trade-exec jobs    */
+  /* ------------------------------------------------------------------ */
 
   private async executeTradeScan(): Promise<void> {
-    await backoff(
-      async () => {
-        const {
-          store,
-          audit,
-          tokens,
-          dhan,
-          configSvc,
-          tradeSync,
-          tradeEntry,
-          qtyResolver,
-          tsl,
-          instrumentLookup,
-        } = await this.initServices();
-
-        try {
-          const token = await tokens.getToken();
-          if (!token) {
-            await this.notifyNoToken(audit);
-            return;
-          }
-
-          await audit.info(LifecycleEvents.DHAN_API_CALL, {
-            action: "Scheduler.tradeScan",
-            message: "Trade scan started",
-            timestamp: new Date().toISOString(),
-          });
-
-          // Phase 2: Actives — scan and place Forever Orders
-          const actives = await tradeSync.fetchActiveTrades();
-          await tradeEntry.runBuyAndInitialSl(
-            store,
-            dhan,
-            qtyResolver,
-            tsl,
-            audit,
-            instrumentLookup,
-            actives,
-            configSvc,
-          );
-        } finally {
-          await store.disconnect();
-        }
-      },
-      { retries: 3, baseMs: 250 },
-    );
-  }
-
-  /** Schedule next 09:20 AM IST run. Re-schedules itself daily. */
-  private scheduleTradeScan(): void {
-    this.tradeScanTimer = this.scheduleAtIST("09:20", async () => {
-      await this.executeTradeScan().catch(() => {});
-      this.scheduleTradeScan(); // re-schedule for next day
-    });
-    this.logSchedule("Trade scan", "09:20");
-  }
-
-  /* ------------------------------------------------------------------ */
-  /*  Monitor — Phase 3: Pending Entries (10:00–14:00 IST)              */
-  /* ------------------------------------------------------------------ */
-
-  private schedulePendingEntryMonitor(): void {
-    for (const t of this.pendingEntryTimers) clearTimeout(t);
-    this.pendingEntryTimers = [];
-
-    for (const time of Scheduler.PENDING_ENTRY_TIMES) {
-      const timer = this.scheduleAtIST(time, async () => {
-        await this.executePendingEntryMonitor().catch(() => {});
-        this.schedulePendingEntryMonitor();
-      });
-      this.pendingEntryTimers.push(timer);
-      this.logSchedule("Pending entries", time);
-    }
-  }
-
-  private async executePendingEntryMonitor(): Promise<void> {
     if (this.marketClosedToday) {
-      console.log("  ⏸ Pending entry monitor skipped (market closed today)");
+      console.log("  ⏸ Trade scan skipped (market closed today)");
       return;
     }
 
-    await backoff(
-      async () => {
-        const { store, audit, tokens, dhan, tradeMonitor } = await this.initServices();
+    const audit = new AuditLogService(this.store.pg, this.telegram);
+    const tradeSync = new TradeSyncService(this.cfg);
+    const userRepo = new UserRepository(this.store.pool);
 
-        try {
-          const token = await tokens.getToken();
-          if (!token) {
-            await this.notifyNoToken(audit);
-            return;
-          }
+    await audit.info(LifecycleEvents.DHAN_API_CALL, {
+      action: "Scheduler.tradeScan",
+      message: "Trade scan started (enqueue-only)",
+      timestamp: new Date().toISOString(),
+    });
 
-          await audit.info(LifecycleEvents.DHAN_API_CALL, {
-            action: "Scheduler.pendingEntryMonitor",
-            message: "Pending entry monitor started",
-            timestamp: new Date().toISOString(),
-          });
-
-          // Phase 3: Monitor pending Forever Orders — mark ENTERED if TRADED
-          await tradeMonitor.monitorPendingEntries(store, dhan, audit);
-        } finally {
-          await store.disconnect();
-        }
-      },
-      { retries: 3, baseMs: 250 },
-    );
-  }
-
-  /* ------------------------------------------------------------------ */
-  /*  Monitor — Phase 5: Entered Trades (11:00–15:00 IST)              */
-  /* ------------------------------------------------------------------ */
-
-  private scheduleEnteredTradeMonitor(): void {
-    for (const t of this.enteredTradeTimers) clearTimeout(t);
-    this.enteredTradeTimers = [];
-
-    for (const time of Scheduler.ENTERED_TRADE_TIMES) {
-      const timer = this.scheduleAtIST(time, async () => {
-        await this.executeEnteredTradeMonitor().catch(() => {});
-        this.scheduleEnteredTradeMonitor();
+    // 1. Fetch shared signals (one API call, shared across all users)
+    const actives = await tradeSync.fetchActiveTrades();
+    if (!actives || actives.length === 0) {
+      await audit.info(LifecycleEvents.DHAN_API_CALL, {
+        action: "Scheduler.tradeScan",
+        message: "No active signals found",
       });
-      this.enteredTradeTimers.push(timer);
-      this.logSchedule("Entered trades", time);
-    }
-  }
-
-  private async executeEnteredTradeMonitor(): Promise<void> {
-    if (this.marketClosedToday) {
-      console.log("  ⏸ Entered trade monitor skipped (market closed today)");
       return;
     }
 
-    await backoff(
-      async () => {
-        const { store, audit, tokens, dhan, tradeMonitor } = await this.initServices();
+    // 2. Get all active users with trading enabled
+    const users = await userRepo.getActiveUsers();
+    if (users.length === 0) {
+      await audit.info(LifecycleEvents.DHAN_API_CALL, {
+        action: "Scheduler.tradeScan",
+        message: "No active users found",
+      });
+      return;
+    }
 
-        try {
-          const token = await tokens.getToken();
-          if (!token) {
-            await this.notifyNoToken(audit);
-            return;
-          }
+    // 3. Enqueue per-user trade execution jobs (one job per user × signal)
+    const execQueue = this.queues.get(QUEUE_NAMES.TRADE_EXECUTION);
+    if (!execQueue) throw new Error("Trade execution queue not found");
 
-          await audit.info(LifecycleEvents.DHAN_API_CALL, {
-            action: "Scheduler.enteredTradeMonitor",
-            message: "Entered trade monitor started",
-            timestamp: new Date().toISOString(),
-          });
+    const traceId = `scan-${todayKey()}-${Date.now()}`;
+    let enqueued = 0;
 
-          // Phase 5: Monitor ENTERED trades — check holdings, sell if target/SL hit
-          await tradeMonitor.monitorEnteredTrades(store, dhan, audit);
-        } finally {
-          await store.disconnect();
-        }
-      },
-      { retries: 3, baseMs: 250 },
-    );
-  }
+    for (const user of users) {
+      // Check if user has a valid token in Redis
+      const hasToken = await this.redis.exists(`token:${user.id}`);
+      if (!hasToken) continue;
 
-  /* ------------------------------------------------------------------ */
-  /*  Closed Trades — Phase 4 (14:30 IST, before market close)          */
-  /* ------------------------------------------------------------------ */
+      for (const signal of actives) {
+        const jobId = makeJobId(["exec", user.id, signal.id, todayKey()]);
+        await execQueue.add(
+          "trade-entry",
+          {
+            userId: user.id,
+            phase: "ENTRY",
+            signal,
+            traceId,
+            enqueuedAt: new Date().toISOString(),
+          } as TradeExecutionJob,
+          { jobId },
+        );
+        enqueued++;
+      }
+    }
 
-  private scheduleClosedTradesScan(): void {
-    this.closedTradesTimer = this.scheduleAtIST(Scheduler.CLOSED_TRADES_TIME, async () => {
-      await this.executeClosedTradesScan().catch(() => {});
-      this.scheduleClosedTradesScan(); // re-schedule for next day
+    await audit.info(LifecycleEvents.DHAN_API_CALL, {
+      action: "Scheduler.tradeScan",
+      message: `Enqueued ${enqueued} trade execution jobs for ${users.length} users × ${actives.length} signals`,
     });
-    this.logSchedule("Closed trades scan", Scheduler.CLOSED_TRADES_TIME);
   }
+
+  /* ------------------------------------------------------------------ */
+  /*  Monitor: Enqueue per-user monitor jobs                             */
+  /* ------------------------------------------------------------------ */
+
+  private async enqueueMonitorJobs(phase: "PENDING_ENTRIES" | "ENTERED_TRADES"): Promise<void> {
+    if (this.marketClosedToday) {
+      console.log(`  ⏸ Monitor (${phase}) skipped (market closed today)`);
+      return;
+    }
+
+    const userRepo = new UserRepository(this.store.pool);
+    const users = await userRepo.getActiveUsers();
+    const monitorQueue = this.queues.get(QUEUE_NAMES.TRADE_MONITOR);
+    if (!monitorQueue) return;
+
+    const timeSlot = DateTime.now().setZone("Asia/Kolkata").toFormat("HH:mm");
+    const traceId = `mon-${phase}-${todayKey()}-${timeSlot}`;
+
+    for (const user of users) {
+      const hasToken = await this.redis.exists(`token:${user.id}`);
+      if (!hasToken) continue;
+
+      const jobId = makeJobId(["monitor", user.id, phase, todayKey(), timeSlot]);
+      await monitorQueue.add(
+        "monitor",
+        {
+          userId: user.id,
+          phase,
+          traceId,
+          enqueuedAt: new Date().toISOString(),
+        } as TradeMonitorJob,
+        { jobId },
+      );
+    }
+
+    console.log(`  📤 Enqueued ${phase} monitor jobs for ${users.length} users`);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Closed Trades: Fetch closed signals → enqueue recon jobs           */
+  /* ------------------------------------------------------------------ */
 
   private async executeClosedTradesScan(): Promise<void> {
     if (this.marketClosedToday) {
@@ -341,84 +292,111 @@ export class Scheduler {
       return;
     }
 
-    await backoff(
-      async () => {
-        const { store, audit, tokens, dhan, tradeSync, tradeReconciliation } =
-          await this.initServices();
+    const tradeSync = new TradeSyncService(this.cfg);
+    const userRepo = new UserRepository(this.store.pool);
 
-        try {
-          const token = await tokens.getToken();
-          if (!token) {
-            await this.notifyNoToken(audit);
-            return;
-          }
+    const closed = await tradeSync.fetchClosedTrades();
+    if (!closed || closed.length === 0) return;
 
-          await audit.info(LifecycleEvents.DHAN_API_CALL, {
-            action: "Scheduler.closedTradesScan",
-            message: "Closed trades scan started",
-            timestamp: new Date().toISOString(),
-          });
+    const users = await userRepo.getActiveUsers();
+    const reconQueue = this.queues.get(QUEUE_NAMES.TRADE_RECONCILIATION);
+    if (!reconQueue) return;
 
-          // Phase 4: Handle external closures from Closed API
-          const closed = await tradeSync.fetchClosedTrades();
-          await tradeReconciliation.processClosedTrades(store, dhan, audit, closed);
-        } finally {
-          await store.disconnect();
-        }
-      },
-      { retries: 3, baseMs: 250 },
-    );
+    const traceId = `closed-${todayKey()}-${Date.now()}`;
+
+    for (const user of users) {
+      const hasToken = await this.redis.exists(`token:${user.id}`);
+      if (!hasToken) continue;
+
+      const jobId = makeJobId(["recon-closed", user.id, todayKey()]);
+      await reconQueue.add(
+        "closed-trades",
+        {
+          userId: user.id,
+          phase: "CLOSED_TRADES",
+          closedSignals: closed,
+          traceId,
+          enqueuedAt: new Date().toISOString(),
+        } as ReconciliationJob,
+        { jobId },
+      );
+    }
   }
 
   /* ------------------------------------------------------------------ */
-  /*  Reconcile — Phase 6 (once/day after market close, 16:00 IST)      */
+  /*  Reconciliation: Enqueue per-user reconciliation jobs               */
   /* ------------------------------------------------------------------ */
 
-  private scheduleReconciliation(): void {
-    this.reconcileTimer = this.scheduleAtIST(Scheduler.RECONCILE_TIME, async () => {
-      await this.executeReconciliation().catch(() => {});
-      this.scheduleReconciliation(); // re-schedule for next day
+  private async enqueueReconciliationJobs(
+    phase: "CLOSED_TRADES" | "POSITION_RECONCILE",
+  ): Promise<void> {
+    const userRepo = new UserRepository(this.store.pool);
+    const users = await userRepo.getActiveUsers();
+    const reconQueue = this.queues.get(QUEUE_NAMES.TRADE_RECONCILIATION);
+    if (!reconQueue) return;
+
+    const traceId = `recon-${phase}-${todayKey()}-${Date.now()}`;
+
+    for (const user of users) {
+      const hasToken = await this.redis.exists(`token:${user.id}`);
+      if (!hasToken) continue;
+
+      const jobId = makeJobId(["recon", user.id, phase, todayKey()]);
+      await reconQueue.add(
+        "reconciliation",
+        {
+          userId: user.id,
+          phase,
+          traceId,
+          enqueuedAt: new Date().toISOString(),
+        } as ReconciliationJob,
+        { jobId },
+      );
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Token Renewal: Proactive daily renewal for all users               */
+  /* ------------------------------------------------------------------ */
+
+  private scheduleTokenRenewal(): void {
+    this.tokenRenewalTimer = this.scheduleAtIST("08:00", async () => {
+      await this.enqueueTokenRenewalJobs().catch(() => {});
+      this.scheduleTokenRenewal();
     });
-    this.logSchedule("Reconciliation", Scheduler.RECONCILE_TIME);
+    this.logSchedule("Token renewal", "08:00");
   }
 
-  private async executeReconciliation(): Promise<void> {
-    await backoff(
-      async () => {
-        const { store, audit, tokens, dhan, tradeReconciliation } = await this.initServices();
+  private async enqueueTokenRenewalJobs(): Promise<void> {
+    const userRepo = new UserRepository(this.store.pool);
+    const users = await userRepo.getActiveUsers();
+    const tokenQueue = this.queues.get(QUEUE_NAMES.TOKEN_RENEWAL);
+    if (!tokenQueue) return;
 
-        try {
-          const token = await tokens.getToken();
-          if (!token) {
-            await this.notifyNoToken(audit);
-            return;
-          }
+    const traceId = `token-${todayKey()}`;
 
-          await audit.info(LifecycleEvents.DHAN_API_CALL, {
-            action: "Scheduler.reconciliation",
-            message: "Post-market reconciliation started",
-            timestamp: new Date().toISOString(),
-          });
+    for (const user of users) {
+      // Only renew for users with TOTP credentials
+      if (!user.dhan_credentials_enc) continue;
 
-          // Phase 6: Reconcile Dhan positions with local trades table
-          await tradeReconciliation.reconcilePositions(store, dhan, audit);
-        } finally {
-          await store.disconnect();
-        }
-      },
-      { retries: 3, baseMs: 250 },
-    );
+      const jobId = makeJobId(["token-renew", user.id, todayKey()]);
+      await tokenQueue.add(
+        "proactive-renew",
+        {
+          userId: user.id,
+          action: "GENERATE_TOTP",
+          traceId,
+          enqueuedAt: new Date().toISOString(),
+        } as TokenRenewalJob,
+        { jobId },
+      );
+    }
   }
 
   /* ------------------------------------------------------------------ */
   /*  Market Closed Check — 09:00 IST daily                             */
   /* ------------------------------------------------------------------ */
 
-  /**
-   * Runs at 09:00 IST daily (before any trading schedule).
-   * Queries the market_holidays table and sets `marketClosedToday`.
-   * Sends a Telegram notification for named holidays (not weekends).
-   */
   private scheduleMarketClosedCheck(): void {
     this.marketClosedCheckTimer = this.scheduleAtIST("09:00", async () => {
       await this.executeMarketClosedCheck().catch(() => {});
@@ -428,11 +406,8 @@ export class Scheduler {
   }
 
   private async executeMarketClosedCheck(): Promise<void> {
-    const store = new StateStore(this.cfg);
-
     try {
-      await store.connect();
-      const holidaySvc = new HolidayService(store.pg);
+      const holidaySvc = new HolidayService(this.store.pg);
       const result = await holidaySvc.isMarketClosed();
 
       this.marketClosedToday = result.closed;
@@ -440,7 +415,6 @@ export class Scheduler {
       if (result.closed) {
         console.log(`📅 Market closed today: ${result.reason}`);
 
-        // Only notify via Telegram for named holidays, skip weekends silently
         if (result.type === "holiday") {
           const today = DateTime.now().setZone("Asia/Kolkata").toFormat("dd-MMM-yyyy");
           await this.telegram.notify(
@@ -453,23 +427,71 @@ export class Scheduler {
         console.log("✅ Market open today — all schedules active");
       }
     } catch (err: any) {
-      // On error, assume market is open (fail-open for safety)
       this.marketClosedToday = false;
       console.error("Market closed check failed (assuming open):", err?.message);
-    } finally {
-      await store.disconnect();
     }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Schedule Timers                                                    */
+  /* ------------------------------------------------------------------ */
+
+  private scheduleTradeScan(): void {
+    this.tradeScanTimer = this.scheduleAtIST("09:20", async () => {
+      await this.executeTradeScan().catch(() => {});
+      this.scheduleTradeScan();
+    });
+    this.logSchedule("Trade scan", "09:20");
+  }
+
+  private schedulePendingEntryMonitor(): void {
+    for (const t of this.pendingEntryTimers) clearTimeout(t);
+    this.pendingEntryTimers = [];
+
+    for (const time of Scheduler.PENDING_ENTRY_TIMES) {
+      const timer = this.scheduleAtIST(time, async () => {
+        await this.enqueueMonitorJobs("PENDING_ENTRIES").catch(() => {});
+        this.schedulePendingEntryMonitor();
+      });
+      this.pendingEntryTimers.push(timer);
+      this.logSchedule("Pending entries", time);
+    }
+  }
+
+  private scheduleEnteredTradeMonitor(): void {
+    for (const t of this.enteredTradeTimers) clearTimeout(t);
+    this.enteredTradeTimers = [];
+
+    for (const time of Scheduler.ENTERED_TRADE_TIMES) {
+      const timer = this.scheduleAtIST(time, async () => {
+        await this.enqueueMonitorJobs("ENTERED_TRADES").catch(() => {});
+        this.scheduleEnteredTradeMonitor();
+      });
+      this.enteredTradeTimers.push(timer);
+      this.logSchedule("Entered trades", time);
+    }
+  }
+
+  private scheduleClosedTradesScan(): void {
+    this.closedTradesTimer = this.scheduleAtIST(Scheduler.CLOSED_TRADES_TIME, async () => {
+      await this.executeClosedTradesScan().catch(() => {});
+      this.scheduleClosedTradesScan();
+    });
+    this.logSchedule("Closed trades scan", Scheduler.CLOSED_TRADES_TIME);
+  }
+
+  private scheduleReconciliation(): void {
+    this.reconcileTimer = this.scheduleAtIST(Scheduler.RECONCILE_TIME, async () => {
+      await this.enqueueReconciliationJobs("POSITION_RECONCILE").catch(() => {});
+      this.scheduleReconciliation();
+    });
+    this.logSchedule("Reconciliation", Scheduler.RECONCILE_TIME);
   }
 
   /* ------------------------------------------------------------------ */
   /*  Scheduling helpers                                                 */
   /* ------------------------------------------------------------------ */
 
-  /**
-   * Schedule a callback at a specific IST time (HH:MM).
-   * If the time has already passed today, schedules for tomorrow.
-   * Skips weekends (Saturday=6, Sunday=0).
-   */
   private scheduleAtIST(time: string, callback: () => Promise<void>): NodeJS.Timeout {
     const [hours, mins] = time.split(":").map(Number);
     const IST = "Asia/Kolkata";
@@ -478,7 +500,6 @@ export class Scheduler {
       .setZone(IST)
       .set({ hour: hours, minute: mins, second: 0, millisecond: 0 });
 
-    // If already past this time today (in IST), schedule for tomorrow
     if (target <= DateTime.now().setZone(IST)) {
       target = target.plus({ days: 1 });
     }
@@ -486,12 +507,10 @@ export class Scheduler {
     const msUntil = target.toMillis() - Date.now();
 
     return setTimeout(async () => {
-      // Skip weekends (IST day)
       const day = DateTime.now().setZone(IST).weekday; // 1=Mon, 7=Sun
       if (day !== 6 && day !== 7) {
         await callback();
       } else {
-        // Still re-schedule on weekends so Monday fires
         await callback(); // callback handles re-scheduling
       }
     }, msUntil);
@@ -513,78 +532,5 @@ export class Scheduler {
     console.log(
       `  ${label} scheduled in ${hoursUntil}h (${target.toFormat("dd/MM/yyyy, hh:mm:ss a")} IST)`,
     );
-  }
-
-  /* ------------------------------------------------------------------ */
-  /*  Shared helpers                                                     */
-  /* ------------------------------------------------------------------ */
-
-  private async initServices() {
-    const store = new StateStore(this.cfg);
-    const tradeSync = new TradeSyncService(this.cfg);
-    const tradeEntry = new TradeEntryService(this.cfg);
-    const tradeMonitor = new TradeMonitorService(this.cfg);
-    const tradeReconciliation = new TradeReconciliationService(this.cfg);
-    const qtyResolver = new QuantityResolverService();
-
-    // Create audit early (Telegram-only until PG connects)
-    let audit = new AuditLogService(null, this.telegram);
-
-    // Connect Postgres
-    try {
-      await store.connect();
-    } catch (err: any) {
-      await audit.critical(LifecycleEvents.ERROR_OCCURRED, {
-        action: "Scheduler.initServices",
-        error: "Failed to connect to Postgres DB",
-        message: err?.message,
-      });
-      throw err;
-    }
-
-    // Reload runtime trading config from DB (picks up any /config changes)
-    await this.configSvc.load();
-
-    // TSL uses DB-backed config values (freshly loaded)
-    const tsl = new TSLService(this.configSvc.tsl);
-
-    // Upgrade audit with PG client now that connection is live
-    audit = new AuditLogService(store.pg, this.telegram);
-    const tokens = new TokenService(this.cfg, store, audit);
-    const dhan = new DhanService(this.cfg, tokens, audit);
-
-    // Inject services into TelegramService
-    this.telegram.setTokenService(tokens);
-    this.telegram.setAudit(audit);
-
-    const instrumentLookup = new InstrumentLookupService(store.pg);
-
-    return {
-      store,
-      audit,
-      tokens,
-      dhan,
-      configSvc: this.configSvc,
-      tradeSync,
-      tradeEntry,
-      tradeMonitor,
-      tradeReconciliation,
-      qtyResolver,
-      tsl,
-      instrumentLookup,
-    };
-  }
-
-  private async notifyNoToken(audit: AuditLogService): Promise<void> {
-    const msg =
-      "⚠️ *Trading paused*: No valid Dhan access token\\.\n\n" +
-      "Submit a token via:\n" +
-      "• `/token YOUR_ACCESS_TOKEN`\n" +
-      "• Or configure `DHAN_PIN` \\+ `DHAN_TOTP_SECRET` for auto\\-generation";
-    await this.telegram.notify(msg, "MarkdownV2");
-    await audit.critical(LifecycleEvents.ERROR_OCCURRED, {
-      action: "Scheduler",
-      error: "No valid token — trading paused",
-    });
   }
 }
