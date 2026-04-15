@@ -63,11 +63,17 @@ export function createReconciliationWorker(
 
       const reconService = new TradeReconciliationService(cfg);
 
-      // 4. Run the appropriate phase (UNCHANGED business logic)
+      // 4. Run the appropriate phase with userId for tenant isolation
       if (phase === "CLOSED_TRADES" && closedSignals) {
-        await reconService.processClosedTrades(store, dhan, audit, closedSignals as ClosedTrade[]);
+        await reconService.processClosedTrades(
+          store,
+          dhan,
+          audit,
+          closedSignals as ClosedTrade[],
+          userId,
+        );
       } else if (phase === "POSITION_RECONCILE") {
-        await reconService.reconcilePositions(store, dhan, audit);
+        await reconService.reconcilePositions(store, dhan, audit, userId);
       }
 
       return { success: true, userId, phase };

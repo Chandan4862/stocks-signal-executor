@@ -34,6 +34,7 @@ export class TradeEntryService {
     instrumentLookup: InstrumentLookupService,
     actives: ActiveTrade[],
     configSvc: ConfigService,
+    userId?: number,
   ): Promise<void> {
     for (const at of actives) {
       // Only process cash instruments
@@ -63,6 +64,7 @@ export class TradeEntryService {
           audit,
           instrumentLookup,
           configSvc,
+          userId,
         );
         if (!validated) {
           await this.logRecoScan(store, at, "SKIPPED", "Validation failed");
@@ -73,7 +75,7 @@ export class TradeEntryService {
         const buyRes = await this.placeForeverEntry(dhan, validated);
 
         // Persist state (idempotency, trade record, audit)
-        await this.persistBuyState(store, audit, validated, buyRes, at);
+        await this.persistBuyState(store, audit, validated, buyRes, at, userId);
 
         await this.logRecoScan(store, at, "PLACED", null, validated.entryPrice, validated.quantity);
       } catch (err: any) {
@@ -118,6 +120,7 @@ export class TradeEntryService {
     audit: AuditLogService,
     instrumentLookup: InstrumentLookupService,
     configSvc: ConfigService,
+    userId?: number,
   ): Promise<ValidatedTrade | null> {
     const id = at.id;
     const symbol = String(at.sc_symbol || "").toUpperCase();
@@ -125,8 +128,9 @@ export class TradeEntryService {
 
     // ── Guard 1: Max active trade count ──────────────────────────────
     try {
+      const userFilter = userId ? ` AND user_id = ${userId}` : "";
       const countRes = await store.pg.query(
-        `SELECT COUNT(*) AS cnt FROM trades WHERE state = ANY($1)`,
+        `SELECT COUNT(*) AS cnt FROM trades WHERE state = ANY($1)${userFilter}`,
         [activeStates],
       );
       const activeCount = Number(countRes.rows?.[0]?.cnt ?? 0);
@@ -199,9 +203,10 @@ export class TradeEntryService {
     // ── Guard 2: Max deployed capital ────────────────────────────────
     const newTradeCapital = entryPrice * qty;
     try {
+      const userFilter = userId ? ` AND user_id = ${userId}` : "";
       const capRes = await store.pg.query(
         `SELECT COALESCE(SUM(entry_price * quantity), 0) AS deployed
-         FROM trades WHERE state = ANY($1)`,
+         FROM trades WHERE state = ANY($1)${userFilter}`,
         [activeStates],
       );
       const deployedCapital = Number(capRes.rows?.[0]?.deployed ?? 0);
@@ -306,6 +311,7 @@ export class TradeEntryService {
     v: ValidatedTrade,
     buyRes: PlaceOrderResponse,
     reco?: ActiveTrade,
+    userId?: number,
   ): Promise<void> {
     // Set idempotency guard
     await store.pg.query(
@@ -316,8 +322,8 @@ export class TradeEntryService {
     // Upsert trade record with all fields
     await store.pg.query(
       `INSERT INTO trades (id, tradingsymbol, exchange, reco_type, entry_price, quantity, state,
-                           security_id, symbol, buy_order_id, target, sl_trigger, capital, reco_id)
-       VALUES ($1, $2, 'NSE', 'buy', $3, $4, '${TradeState.AWAITING_ENTRY}', $5, $6, $7, $8, $9, $10, $11)
+                           security_id, symbol, buy_order_id, target, sl_trigger, capital, reco_id, user_id)
+       VALUES ($1, $2, 'NSE', 'buy', $3, $4, '${TradeState.AWAITING_ENTRY}', $5, $6, $7, $8, $9, $10, $11, $12)
        ON CONFLICT (id) DO UPDATE SET
          state = '${TradeState.AWAITING_ENTRY}',
          buy_order_id = EXCLUDED.buy_order_id,
@@ -339,6 +345,7 @@ export class TradeEntryService {
         v.slTrigger,
         v.capital,
         reco?.id ?? null,
+        userId ?? null,
       ],
     );
 

@@ -69,11 +69,27 @@ export function createTradeExecutionWorker(
       const configSvc = new ConfigService(pool);
       await configSvc.loadForUser(userId);
 
-      // 6. Run trade entry logic (UNCHANGED business logic)
+      // 6. Create remaining services
       const entryService = new TradeEntryService(cfg);
-      // TODO: The existing runBuyAndInitialSl expects the full scheduler context.
-      // For now, this worker demonstrates the scaffolding. The actual integration
-      // will be completed when we evolve the trade services to accept (store, dhan, audit, signal).
+      const { QuantityResolverService } = await import("../services/quantityResolverService");
+      const { TSLService } = await import("../services/tslService");
+      const { InstrumentLookupService } = await import("../services/instrumentLookupService");
+      const qtyResolver = new QuantityResolverService();
+      const tsl = new TSLService(configSvc.tsl);
+      const instrumentLookup = new InstrumentLookupService(pool);
+
+      // 7. Run trade entry for this single signal + user
+      await entryService.runBuyAndInitialSl(
+        store,
+        dhan,
+        qtyResolver,
+        tsl,
+        audit,
+        instrumentLookup,
+        [signal],
+        configSvc,
+        userId,
+      );
 
       return { success: true, userId, symbol: signal.sc_symbol };
     },

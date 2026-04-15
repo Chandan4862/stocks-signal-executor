@@ -62,11 +62,11 @@ export function createMonitorWorker(
 
       const monitorService = new TradeMonitorService(cfg);
 
-      // 4. Run the appropriate phase (UNCHANGED business logic)
+      // 4. Run the appropriate phase with userId for tenant isolation
       if (phase === "PENDING_ENTRIES") {
-        await monitorService.monitorPendingEntries(store, dhan, audit);
+        await monitorService.monitorPendingEntries(store, dhan, audit, userId);
       } else if (phase === "ENTERED_TRADES") {
-        await monitorService.monitorEnteredTrades(store, dhan, audit);
+        await monitorService.monitorEnteredTrades(store, dhan, audit, userId);
       }
 
       return { success: true, userId, phase };

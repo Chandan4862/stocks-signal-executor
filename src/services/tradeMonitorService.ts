@@ -39,10 +39,12 @@ export class TradeMonitorService {
     store: StateStore,
     dhan: DhanService,
     audit: AuditLogService,
+    userId?: number,
   ): Promise<void> {
     try {
+      const userFilter = userId ? ` AND user_id = ${userId}` : "";
       const pendingRes = await store.pg.query(
-        `SELECT * FROM trades WHERE state = '${TradeState.AWAITING_ENTRY}' AND buy_order_id IS NOT NULL`,
+        `SELECT * FROM trades WHERE state = '${TradeState.AWAITING_ENTRY}' AND buy_order_id IS NOT NULL${userFilter}`,
       );
       if (pendingRes.rows.length === 0) return;
 
@@ -119,10 +121,12 @@ export class TradeMonitorService {
     store: StateStore,
     dhan: DhanService,
     audit: AuditLogService,
+    userId?: number,
   ): Promise<void> {
     try {
+      const userFilter = userId ? ` AND user_id = ${userId}` : "";
       const enteredRes = await store.pg.query(
-        `SELECT * FROM trades WHERE state = '${TradeState.ENTERED}'`,
+        `SELECT * FROM trades WHERE state = '${TradeState.ENTERED}'${userFilter}`,
       );
       if (enteredRes.rows.length === 0) return;
 

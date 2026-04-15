@@ -35,11 +35,12 @@ export class TradeReconciliationService {
     dhan: DhanService,
     audit: AuditLogService,
     closedTrades: ClosedTrade[],
+    userId?: number,
   ): Promise<void> {
     try {
       for (const ct of closedTrades) {
         // Match by reco_id first, then fallback to symbol
-        const tradeRow = await this.findLocalTrade(store, ct);
+        const tradeRow = await this.findLocalTrade(store, ct, userId);
         if (!tradeRow) continue;
 
         // Already closed locally — skip
@@ -65,6 +66,7 @@ export class TradeReconciliationService {
     store: StateStore,
     dhan: DhanService,
     audit: AuditLogService,
+    userId?: number,
   ): Promise<void> {
     try {
       const holdings = await dhan.getHoldings();
@@ -73,8 +75,9 @@ export class TradeReconciliationService {
       const foreverOrders = await dhan.getForeverOrders();
       const regularOrders = await dhan.getOrders();
 
+      const userFilter = userId ? ` AND user_id = ${userId}` : "";
       const awaitingRes = await store.pg.query(
-        `SELECT * FROM trades WHERE state = '${TradeState.AWAITING_ENTRY}' AND buy_order_id IS NOT NULL`,
+        `SELECT * FROM trades WHERE state = '${TradeState.AWAITING_ENTRY}' AND buy_order_id IS NOT NULL${userFilter}`,
       );
 
       for (const tradeRow of awaitingRes.rows) {
@@ -184,7 +187,7 @@ export class TradeReconciliationService {
 
       // ── Path B: ENTERED + no holding → CLOSED ──
       const enteredRes = await store.pg.query(
-        `SELECT * FROM trades WHERE state = '${TradeState.ENTERED}'`,
+        `SELECT * FROM trades WHERE state = '${TradeState.ENTERED}'${userFilter}`,
       );
 
       for (const tradeRow of enteredRes.rows) {
@@ -257,9 +260,16 @@ export class TradeReconciliationService {
    * S4: Find local trade matching a closed trade.
    * Primary: match by reco_id. Fallback: match by symbol + active state.
    */
-  private async findLocalTrade(store: StateStore, ct: ClosedTrade): Promise<any | null> {
+  private async findLocalTrade(
+    store: StateStore,
+    ct: ClosedTrade,
+    userId?: number,
+  ): Promise<any | null> {
+    const userFilter = userId ? ` AND user_id = ${userId}` : "";
     // Primary: match by reco_id
-    const byReco = await store.pg.query(`SELECT * FROM trades WHERE reco_id = $1`, [ct.id]);
+    const byReco = await store.pg.query(`SELECT * FROM trades WHERE reco_id = $1${userFilter}`, [
+      ct.id,
+    ]);
     if (byReco.rows.length > 0) return byReco.rows[0];
 
     // Fallback: match by symbol + active state
@@ -267,7 +277,7 @@ export class TradeReconciliationService {
     if (!symbol) return null;
 
     const bySymbol = await store.pg.query(
-      `SELECT * FROM trades WHERE symbol = $1 AND state IN ('${TradeState.AWAITING_ENTRY}', '${TradeState.ENTERED}') LIMIT 1`,
+      `SELECT * FROM trades WHERE symbol = $1 AND state IN ('${TradeState.AWAITING_ENTRY}', '${TradeState.ENTERED}')${userFilter} LIMIT 1`,
       [symbol],
     );
     return bySymbol.rows.length > 0 ? bySymbol.rows[0] : null;
