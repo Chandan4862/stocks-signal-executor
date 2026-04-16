@@ -207,6 +207,29 @@ export class ConfigService {
     return lines.join("\n");
   }
 
+  /**
+   * Returns formatted config display with markers showing which values
+   * are user-overridden vs global defaults.
+   * ✏️ = user override, 🌐 = global default
+   */
+  getAllWithOverrides(userOverrides: Set<string>): string {
+    const lines: string[] = ["⚙️ Your Trading Configuration\n"];
+    for (const key of Object.keys(DEFAULTS)) {
+      const val = this.cache.get(key) ?? DEFAULTS[key];
+      const desc = DESCRIPTIONS[key] ?? "";
+      const marker = userOverrides.has(key) ? "✏️" : "🌐";
+      const defaultVal = DEFAULTS[key];
+      const defaultHint = userOverrides.has(key) ? ` [default: ${defaultVal}]` : "";
+      lines.push(`  ${marker} ${key}: ${val}  (${desc})${defaultHint}`);
+    }
+    lines.push("\n✏️ = your override  🌐 = global default");
+    lines.push("\nCommands:");
+    lines.push("  /config <key> <value> — set a value");
+    lines.push("  /config reset <key> — revert to default");
+    lines.push("  /config reset all — revert all overrides");
+    return lines.join("\n");
+  }
+
   /* ------------------------------------------------------------------ */
   /*  Internal                                                           */
   /* ------------------------------------------------------------------ */

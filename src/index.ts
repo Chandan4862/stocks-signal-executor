@@ -14,6 +14,7 @@ import { UserService } from "./modules/user/userService";
 import { CredentialVault } from "./modules/auth/credentialVault";
 import { OnboardingHandler } from "./telegram/handlers/onboardingHandler";
 import { TradingHandler } from "./telegram/handlers/tradingHandler";
+import { ConfigHandler } from "./telegram/handlers/configHandler";
 import { UserResolverMiddleware } from "./telegram/middleware/userResolver";
 import { Client } from "pg";
 
@@ -60,9 +61,10 @@ async function main() {
   const userResolver = new UserResolverMiddleware(userRepo);
   const onboardingHandler = new OnboardingHandler(userService, vault, redis);
   const tradingHandler = new TradingHandler(userRepo, redis, queues);
+  const configHandler = new ConfigHandler(store.pool);
 
   // Wire handlers into TelegramService
-  telegram.setMultiUserHandlers(userResolver, onboardingHandler, tradingHandler);
+  telegram.setMultiUserHandlers(userResolver, onboardingHandler, tradingHandler, configHandler);
 
   // --- Scheduler (enqueue-only) ---
   const scheduler = new Scheduler(config, telegram, configSvc, queues, store, redis);

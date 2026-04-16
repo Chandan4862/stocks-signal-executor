@@ -25,6 +25,7 @@ import type { Scheduler } from "./scheduler";
 import type { UserResolverMiddleware, UserContext } from "../telegram/middleware/userResolver";
 import type { OnboardingHandler } from "../telegram/handlers/onboardingHandler";
 import type { TradingHandler } from "../telegram/handlers/tradingHandler";
+import type { ConfigHandler } from "../telegram/handlers/configHandler";
 
 export class TelegramService {
   private bot: Telegraf;
@@ -82,8 +83,9 @@ export class TelegramService {
     userResolver: UserResolverMiddleware,
     onboarding: OnboardingHandler,
     trading: TradingHandler,
+    config: ConfigHandler,
   ): void {
-    this.registerMultiUserHandlers(userResolver, onboarding, trading);
+    this.registerMultiUserHandlers(userResolver, onboarding, trading, config);
   }
 
   /* ------------------------------------------------------------------ */
@@ -379,33 +381,7 @@ export class TelegramService {
       }
     });
 
-    // /config — view or update runtime trading configuration
-    this.bot.command("config", async (ctx) => {
-      if (!this.configService) {
-        ctx.reply("⚠️ ConfigService not initialized yet. Try again later.");
-        return;
-      }
-
-      const args = ctx.message.text.split(/\s+/).slice(1);
-
-      // /config — show all config
-      if (args.length === 0) {
-        ctx.reply(this.configService.getAll());
-        return;
-      }
-
-      // /config <key> <value> — update a value
-      if (args.length === 2) {
-        const [key, value] = args;
-        const result = await this.configService.set(key, value);
-        ctx.reply(result.message);
-        return;
-      }
-
-      ctx.reply(
-        "Usage:\n" + "  /config — show all values\n" + "  /config <key> <value> — update a value",
-      );
-    });
+    // /config — handled by multi-user ConfigHandler (registered in registerMultiUserHandlers)
 
     // Silently ignore all unrecognised messages — no reply to unauthorized users
   }
@@ -418,6 +394,7 @@ export class TelegramService {
     userResolver: UserResolverMiddleware,
     onboarding: OnboardingHandler,
     trading: TradingHandler,
+    config: ConfigHandler,
   ): void {
     // User resolver middleware — attaches user to ctx.state for all subsequent handlers
     this.bot.use(userResolver.middleware() as any);
@@ -434,6 +411,16 @@ export class TelegramService {
     // Trading commands (multi-user)
     this.bot.command("enable", (ctx) => trading.handleEnable(ctx as unknown as UserContext));
     this.bot.command("disable", (ctx) => trading.handleDisable(ctx as unknown as UserContext));
+    this.bot.command("status", (ctx) => trading.handleStatus(ctx as unknown as UserContext));
+    this.bot.command("monitor", (ctx) =>
+      trading.handleManualMonitor(ctx as unknown as UserContext),
+    );
+
+    // Onboarding: manual token submission
+    this.bot.command("token", (ctx) => onboarding.handleToken(ctx as unknown as UserContext));
+
+    // Config command (multi-user)
+    this.bot.command("config", (ctx) => config.handleConfig(ctx as unknown as UserContext));
   }
 
   /* ------------------------------------------------------------------ */

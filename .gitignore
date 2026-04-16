@@ -7,3 +7,4 @@ backups/
 *.pem
 *.key
 *.pub
+mock-server/node_modules/

@@ -54,8 +54,10 @@ interface RenewTokenResponse {
   expiryTime: string;
 }
 
-const DHAN_AUTH_BASE = "https://auth.dhan.co";
-const DHAN_API_BASE = "https://api.dhan.co/v2";
+const DHAN_AUTH_BASE = process.env.DHAN_AUTH_BASE_URL || "https://auth.dhan.co";
+const DHAN_API_BASE = process.env.DHAN_API_BASE_URL
+  ? `${process.env.DHAN_API_BASE_URL}/v2`
+  : "https://api.dhan.co/v2";
 
 export class TokenService {
   /** In-memory token cache — replaces Redis fast path */
