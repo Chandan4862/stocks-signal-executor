@@ -36,8 +36,8 @@ export const AppConfigSchema = z.object({
   }),
   telegram: z.object({
     botToken: z.string().min(1),
-    defaultChatId: z.string().min(1),
-    tradesChatId: z.string().optional(),
+    loggerChatId: z.string().min(1),
+    userChatId: z.string().optional(),
   }),
   masterEncryptionKey: z.string().min(32), // AES-256 key for credential vault
   postbackPort: z.number().int().positive().optional(),

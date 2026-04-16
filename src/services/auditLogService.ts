@@ -5,18 +5,17 @@
    DEBUG    → console only
    INFO     → console + Postgres
    WARN     → console + Postgres
-   ERROR    → console + Postgres + Telegram
-   CRITICAL → console + Postgres + Telegram (🔴 prefix)
+   ERROR    → console + Postgres + notification queue (→ Telegram)
+   CRITICAL → console + Postgres + notification queue (→ Telegram)
+
+ Notifications are enqueued to BullMQ (never sent directly).
+ The NotificationWorker is the sole Telegram sender.
 */
 
 import type { Client, Pool } from "pg";
+import type { Queue } from "bullmq";
 import { LifecycleEvents, LogLevel } from "../enums/trade";
-
-/** Telegram notifier interface — avoids circular dependency on TelegramService */
-export interface TelegramNotifier {
-  notify(text: string, parseMode?: "MarkdownV2" | "HTML"): Promise<void>;
-  notifyTrades(text: string): Promise<void>;
-}
+import type { NotificationJob } from "../queues/jobs";
 
 const LEVEL_LABELS: Record<LogLevel, string> = {
   [LogLevel.DEBUG]: "DEBUG",
@@ -36,30 +35,22 @@ const LEVEL_EMOJI: Record<LogLevel, string> = {
 
 export class AuditLogService {
   private pg: Client | Pool | null;
-  private telegram: TelegramNotifier | null;
+  private notifQueue: Queue<NotificationJob> | null;
   private userId: number | null;
 
   constructor(
     pg?: Client | Pool | null,
-    telegram?: TelegramNotifier | null,
+    notifQueue?: Queue<NotificationJob> | null,
     userId?: number | null,
   ) {
     this.pg = pg ?? null;
-    this.telegram = telegram ?? null;
+    this.notifQueue = notifQueue ?? null;
     this.userId = userId ?? null;
   }
 
   /** Create a user-scoped copy of this service. */
   forUser(userId: number): AuditLogService {
-    return new AuditLogService(this.pg, this.telegram, userId);
-  }
-
-  /**
-   * Set or update the Telegram notifier after construction.
-   * Useful when TelegramService is initialized later in the boot sequence.
-   */
-  setTelegram(telegram: TelegramNotifier): void {
-    this.telegram = telegram;
+    return new AuditLogService(this.pg, this.notifQueue, userId);
   }
 
   /* ------------------------------------------------------------------ */
@@ -73,8 +64,8 @@ export class AuditLogService {
    *   DEBUG    → console only
    *   INFO     → console + DB
    *   WARN     → console + DB
-   *   ERROR    → console + DB + Telegram
-   *   CRITICAL → console + DB + Telegram
+   *   ERROR    → console + DB + notification queue
+   *   CRITICAL → console + DB + notification queue
    */
   async record(
     event: LifecycleEvents,
@@ -101,14 +92,20 @@ export class AuditLogService {
       }
     }
 
-    // 3. Send to Telegram for ERROR and CRITICAL
-    if (this.telegram && level >= LogLevel.ERROR) {
+    // 3. Enqueue notification for ERROR and CRITICAL → admin channel (loggerChatId)
+    if (this.notifQueue && level >= LogLevel.ERROR) {
       try {
         const emoji = LEVEL_EMOJI[level];
         const msg = this.formatTelegramMessage(emoji, label, event, payload);
-        await this.telegram.notify(msg);
+        await this.notifQueue.add("audit-alert", {
+          userId: this.userId ?? 0,
+          text: msg,
+          channel: "admin",
+          traceId: payload.traceId ?? `audit-${Date.now()}`,
+          enqueuedAt: new Date().toISOString(),
+        });
       } catch {
-        // Telegram failure should never break the main flow
+        // Queue failure should never break the main flow
       }
     }
   }
@@ -138,19 +135,25 @@ export class AuditLogService {
   }
 
   /* ------------------------------------------------------------------ */
-  /*  Direct Telegram notification (for trade alerts, not errors)         */
+  /*  Trade notification (enqueued to trades channel → userChatId)       */
   /* ------------------------------------------------------------------ */
 
   /**
-   * Send a trade notification to the dedicated Trades channel.
-   * Uses notifyTrades() → TELEGRAM_TRADES_CHAT_ID (falls back to default).
+   * Enqueue a trade notification to the trades channel (userChatId).
+   * Used for trade entry/exit/SL/target alerts.
    */
   async notify(text: string): Promise<void> {
-    if (this.telegram) {
+    if (this.notifQueue) {
       try {
-        await this.telegram.notifyTrades(text);
+        await this.notifQueue.add("trade-alert", {
+          userId: this.userId ?? 0,
+          text,
+          channel: "trades",
+          traceId: `notify-${Date.now()}`,
+          enqueuedAt: new Date().toISOString(),
+        });
       } catch {
-        // Telegram failure should never break the main flow
+        // Queue failure should never break the main flow
       }
     }
   }

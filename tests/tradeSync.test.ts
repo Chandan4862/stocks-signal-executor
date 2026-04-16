@@ -21,7 +21,7 @@ const baseCfg = {
   },
   postgres: { host: "", port: 5432, database: "", user: "", password: "" },
   redis: { host: "localhost", port: 6379, db: 0 },
-  telegram: { botToken: "tok", defaultChatId: "chat" },
+  telegram: { botToken: "tok", loggerChatId: "chat" },
   masterEncryptionKey: "test-master-key-32-chars-long-ok!",
   env: "development",
 } as any;

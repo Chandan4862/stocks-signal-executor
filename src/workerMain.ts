@@ -65,14 +65,14 @@ async function main() {
   // ── Start all workers ──
   const workers = [
     createTradeExecutionWorker(tradeExecConn, config, pool, notificationQueue),
-    createMonitorWorker(monitorConn, config, pool),
-    createReconciliationWorker(reconConn, config, pool),
+    createMonitorWorker(monitorConn, config, pool, notificationQueue),
+    createReconciliationWorker(reconConn, config, pool, notificationQueue),
     createNotificationWorker(
       notifConn,
       pool,
       telegramSender,
-      config.telegram.defaultChatId,
-      config.telegram.tradesChatId,
+      config.telegram.loggerChatId,
+      config.telegram.userChatId,
     ),
     createTokenRenewalWorker(tokenConn, config, pool),
   ];

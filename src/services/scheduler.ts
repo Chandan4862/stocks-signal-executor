@@ -179,7 +179,8 @@ export class Scheduler {
       return;
     }
 
-    const audit = new AuditLogService(this.store.pg, this.telegram);
+    const notifQueue = this.queues.get(QUEUE_NAMES.NOTIFICATION) ?? null;
+    const audit = new AuditLogService(this.store.pg, notifQueue);
     const tradeSync = new TradeSyncService(this.cfg);
     const userRepo = new UserRepository(this.store.pool);
 

@@ -38,10 +38,10 @@ export interface ReconciliationJob extends BaseJob {
 
 /** Notification: one Telegram message per job */
 export interface NotificationJob extends BaseJob {
-  chatId: string;
+  chatId?: string; // explicit override (optional)
   text: string;
   parseMode?: "MarkdownV2" | "HTML";
-  channel: "default" | "trades";
+  channel: "default" | "trades" | "admin";
 }
 
 /** Token renewal: one job per user */

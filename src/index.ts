@@ -34,13 +34,14 @@ async function main() {
   const queues = createQueues(redis);
   console.log(`✅ ${queues.size} BullMQ queues created`);
 
-  // --- Audit (global, with PG + Telegram) ---
+  // --- Audit (global, with PG + notification queue) ---
   const telegram = new TelegramService(
     config.telegram.botToken,
-    config.telegram.defaultChatId,
-    config.telegram.tradesChatId,
+    config.telegram.loggerChatId,
+    config.telegram.userChatId,
   );
-  const audit = new AuditLogService(store.pg, telegram);
+  const notifQueue = queues.get("notification")!;
+  const audit = new AuditLogService(store.pg, notifQueue);
 
   // --- ConfigService (long-lived, backed by PG pool) ---
   const configSvc = new ConfigService(store.pg);
@@ -88,7 +89,7 @@ async function main() {
     });
     await postbackPg.connect();
 
-    const postbackAudit = new AuditLogService(postbackPg, telegram);
+    const postbackAudit = new AuditLogService(postbackPg, notifQueue);
     postback = new PostbackService(postbackPg, postbackAudit);
     postback.start(config.postbackPort);
   }

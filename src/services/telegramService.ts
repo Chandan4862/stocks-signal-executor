@@ -13,7 +13,7 @@
  *   /renew      - Renew the current access token for another 24h
  *   "Hello"     - Health-check echo → replies "World 🌍"
  *
- * Push notifications via `notify(text)` are sent to `defaultChatId`.
+ * Push notifications via `notify(text)` are sent to `loggerChatId`.
  */
 
 import { Telegraf } from "telegraf";
@@ -37,8 +37,8 @@ export class TelegramService {
 
   constructor(
     private botToken: string,
-    private defaultChatId: string,
-    private tradesChatId?: string,
+    private loggerChatId: string,
+    private userChatId?: string,
   ) {
     this.bot = new Telegraf(this.botToken);
     this.registerHandlers();
@@ -153,7 +153,7 @@ export class TelegramService {
   async notify(text: string, parseMode?: "MarkdownV2" | "HTML"): Promise<void> {
     try {
       await this.bot.telegram.sendMessage(
-        this.defaultChatId,
+        this.loggerChatId,
         text,
         parseMode ? { parse_mode: parseMode } : undefined,
       );
@@ -165,10 +165,10 @@ export class TelegramService {
 
   /**
    * Send a trade notification to the dedicated trades channel.
-   * Falls back to the default channel if tradesChatId is not configured.
+   * Falls back to the default channel if userChatId is not configured.
    */
   async notifyTrades(text: string): Promise<void> {
-    const chatId = this.tradesChatId || this.defaultChatId;
+    const chatId = this.userChatId || this.loggerChatId;
     try {
       await this.bot.telegram.sendMessage(chatId, text);
     } catch (err: any) {
@@ -433,7 +433,7 @@ export class TelegramService {
    * to unauthorized users.
    */
   private isAuthorized(ctx: any): boolean {
-    return String(ctx.chat?.id) === this.tradesChatId;
+    return String(ctx.chat?.id) === this.userChatId;
   }
 
   /* ------------------------------------------------------------------ */

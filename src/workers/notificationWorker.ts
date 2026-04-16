@@ -1,9 +1,12 @@
 /*
-  NotificationWorker: Sends Telegram messages from the notification queue.
-  Rate limited: 10 msg/s global via BullMQ limiter.
+  NotificationWorker: Sole Telegram sender — all notifications flow through this worker.
 
-  Resolves chatId from userId if not provided.
-  Supports two channels: 'default' (error chat) and 'trades' (trade alerts).
+  Channel routing:
+    "admin"   → loggerChatId (errors, critical alerts, system notifications)
+    "trades"  → userChatId (trade entry/exit/SL/target alerts)
+    "default" → per-user telegram_chat_id (personal DMs, looked up from DB)
+
+  Rate limited: 10 msg/s global via BullMQ limiter.
 */
 
 import { Worker, type Job } from "bullmq";
@@ -21,30 +24,40 @@ export function createNotificationWorker(
   connection: Redis,
   pool: Pool,
   telegramSender: TelegramSender,
-  defaultChatId: string,
-  tradesChatId?: string,
+  loggerChatId: string,
+  userChatId?: string,
 ): Worker<NotificationJob> {
   const worker = new Worker<NotificationJob>(
     QUEUE_NAMES.NOTIFICATION,
     async (job: Job<NotificationJob>) => {
       const { userId, chatId, text, parseMode, channel } = job.data;
 
-      // Resolve chatId: explicit > user's chat > default
+      // Resolve chatId: explicit override wins
       let targetChatId = chatId;
 
-      if (!targetChatId && userId) {
-        const userRepo = new UserRepository(pool);
-        const user = await userRepo.findById(userId);
-        targetChatId = user?.telegram_chat_id ?? "";
-      }
-
-      // Channel routing
-      if (channel === "trades" && tradesChatId) {
-        targetChatId = tradesChatId;
-      }
-
       if (!targetChatId) {
-        targetChatId = defaultChatId;
+        switch (channel) {
+          case "admin":
+            // Errors/critical → admin logger channel
+            targetChatId = loggerChatId;
+            break;
+
+          case "trades":
+            // Trade alerts → user-facing channel (falls back to logger)
+            targetChatId = userChatId || loggerChatId;
+            break;
+
+          case "default":
+          default:
+            // Per-user DMs: look up their personal chat ID from DB
+            if (userId) {
+              const userRepo = new UserRepository(pool);
+              const user = await userRepo.findById(userId);
+              targetChatId = user?.telegram_chat_id ?? loggerChatId;
+            } else {
+              targetChatId = loggerChatId;
+            }
+        }
       }
 
       if (!targetChatId) {
@@ -53,7 +66,7 @@ export function createNotificationWorker(
 
       await telegramSender.sendMessage(targetChatId, text, parseMode);
 
-      return { sent: true, chatId: targetChatId };
+      return { sent: true, chatId: targetChatId, channel };
     },
     {
       connection,

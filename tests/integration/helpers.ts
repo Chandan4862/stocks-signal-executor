@@ -31,7 +31,7 @@ export const cfg: AppConfig = {
     user: process.env.PG_USER || "postgres",
     password: process.env.PG_PASSWORD || "postgres",
   },
-  telegram: { botToken: "fake", defaultChatId: "fake" },
+  telegram: { botToken: "fake", loggerChatId: "fake" },
   env: "test",
 } as any;
 

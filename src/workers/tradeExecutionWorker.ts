@@ -52,7 +52,7 @@ export function createTradeExecutionWorker(
       }
 
       // 3. Create user-scoped services
-      const audit = new AuditLogService(pool, null, userId);
+      const audit = new AuditLogService(pool, notificationQueue, userId);
       const dhan = new DhanService(
         { ...cfg, dhan: { clientId: user.dhan_client_id } },
         null, // No TokenService — token injected directly

@@ -13,7 +13,7 @@ import { Worker, type Job } from "bullmq";
 import type Redis from "ioredis";
 import type { Pool } from "pg";
 import type { AppConfig } from "../config/schema";
-import type { ReconciliationJob } from "../queues/jobs";
+import type { ReconciliationJob, NotificationJob } from "../queues/jobs";
 import { QUEUE_NAMES } from "../queues/queueRegistry";
 import { DhanService } from "../services/dhanService";
 import { TradeReconciliationService } from "../services/tradeReconciliationService";
@@ -22,10 +22,13 @@ import { StateStore } from "../services/stateStore";
 import { UserRepository } from "../modules/user/userRepository";
 import type { ClosedTrade } from "../models/closedTrade";
 
+import type { Queue } from "bullmq";
+
 export function createReconciliationWorker(
   connection: Redis,
   cfg: AppConfig,
   pool: Pool,
+  notificationQueue: Queue<NotificationJob>,
 ): Worker<ReconciliationJob> {
   const worker = new Worker<ReconciliationJob>(
     QUEUE_NAMES.TRADE_RECONCILIATION,
@@ -50,7 +53,7 @@ export function createReconciliationWorker(
       }
 
       // 3. Create user-scoped services
-      const audit = new AuditLogService(pool, null, userId);
+      const audit = new AuditLogService(pool, notificationQueue, userId);
       const dhan = new DhanService(
         { ...cfg, dhan: { clientId: user.dhan_client_id } },
         null,
