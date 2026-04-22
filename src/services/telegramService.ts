@@ -381,6 +381,24 @@ export class TelegramService {
       }
     });
 
+    // /closedtrades — manually trigger closed trades scan (analyst-closed signals)
+    this.bot.command("closedtrades", async (ctx) => {
+      if (!this.scheduler) {
+        ctx.reply("⚠️ Scheduler not initialized yet. Try again later.");
+        return;
+      }
+
+      ctx.reply("🔄 Running closed trades scan…");
+
+      try {
+        const result = await this.scheduler.runClosedTradesScan();
+        ctx.reply(result);
+      } catch (err: any) {
+        this.logWarn("/closedtrades", "Closed trades scan error", err);
+        ctx.reply(`❌ Closed trades scan error: ${err?.message ?? "unknown"}`);
+      }
+    });
+
     // /config — handled by multi-user ConfigHandler (registered in registerMultiUserHandlers)
 
     // Silently ignore all unrecognised messages — no reply to unauthorized users

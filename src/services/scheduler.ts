@@ -169,6 +169,15 @@ export class Scheduler {
     }
   }
 
+  async runClosedTradesScan(): Promise<string> {
+    try {
+      await this.executeClosedTradesScan();
+      return "✅ Closed trades scan completed — reconciliation jobs enqueued.";
+    } catch (err: any) {
+      return `❌ Closed trades scan failed: ${err?.message ?? "unknown error"}`;
+    }
+  }
+
   /* ------------------------------------------------------------------ */
   /*  Signal Fanout: Fetch signals → enqueue per-user trade-exec jobs    */
   /* ------------------------------------------------------------------ */

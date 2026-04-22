@@ -34,7 +34,7 @@ export function loadConfig(): AppConfig {
     },
     telegram: {
       botToken: env.TELEGRAM_BOT_TOKEN,
-      loggerChatId: env.TELEGRAM_CHAT_ID,
+      loggerChatId: env.TELEGRAM_LOGGER_CHAT_ID,
       userChatId: env.TELEGRAM_TRADES_CHAT_ID || undefined,
     },
     masterEncryptionKey: env.MASTER_ENCRYPTION_KEY,
