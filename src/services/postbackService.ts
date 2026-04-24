@@ -262,9 +262,17 @@ export class PostbackService {
       // Record PnL
       try {
         await this.pg.query(
-          `INSERT INTO pnl_records (trade_id, tradingsymbol, quantity, entry_price, exit_price, realized_pnl, exited_at)
-           VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-          [trade.id, trade.tradingsymbol || trade.symbol, qty, entryPrice, exitPrice, pnl],
+          `INSERT INTO pnl_records (trade_id, tradingsymbol, quantity, entry_price, exit_price, realized_pnl, exited_at, user_id)
+           VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)`,
+          [
+            trade.id,
+            trade.tradingsymbol || trade.symbol,
+            qty,
+            entryPrice,
+            exitPrice,
+            pnl,
+            trade.user_id,
+          ],
         );
       } catch {}
 

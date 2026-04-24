@@ -53,11 +53,7 @@ export function createMonitorWorker(
 
       // 3. Create user-scoped services
       const audit = new AuditLogService(pool, notificationQueue, userId);
-      const dhan = new DhanService(
-        { ...cfg, dhan: { clientId: user.dhan_client_id } },
-        null,
-        audit,
-      );
+      const dhan = new DhanService({ ...cfg, dhan: { clientId: user.dhan_client_id } }, audit);
       dhan.setToken(token);
 
       const store = new StateStore(cfg);

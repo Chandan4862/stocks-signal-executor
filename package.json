@@ -9,7 +9,7 @@
     "dev": "NODE_ENV=production ts-node src/index.ts",
     "dev:watch": "NODE_ENV=development nodemon",
     "build": "tsc -p tsconfig.json",
-    "start": "NODE_ENV=production node dist/index.js",
+    "start": "NODE_ENV=development node dist/index.js",
     "start:worker": "NODE_ENV=production node dist/workerMain.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest",

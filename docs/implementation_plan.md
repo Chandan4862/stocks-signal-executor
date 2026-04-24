@@ -623,7 +623,7 @@ class Scheduler {
 
   private async enqueueMonitor(phase: "PENDING_ENTRIES" | "ENTERED_TRADES"): Promise<void> {
     const users = await this.userService.getActiveUsers();
-    const timeSlot = DateTime.now().setZone("Asia/Kolkata").toFormat("HH:mm");
+    const timeSlot = DateTime.now().setZone("Asia/Kolkata").toFormat("HHmm");
 
     for (const user of users) {
       await this.monitorQueue.add(

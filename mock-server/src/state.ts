@@ -8,6 +8,7 @@
 export interface MockOrder {
   orderId: string;
   correlationId?: string;
+  algoId?: string;
   orderStatus: "PENDING" | "TRADED" | "REJECTED" | "CANCELLED";
   transactionType: "BUY" | "SELL";
   exchangeSegment: string;
@@ -98,6 +99,7 @@ class StateStore {
     // Create the resulting regular order
     const order: MockOrder = {
       orderId: regularOrderId,
+      algoId: foreverOrderId,
       orderStatus: "TRADED",
       transactionType: fo.transactionType,
       exchangeSegment: fo.exchangeSegment,

@@ -40,7 +40,6 @@ services:
         condition: service_healthy
       stock_mock:
         condition: service_healthy
-    restart: unless-stopped
 
   # Worker: BullMQ job processor (dev mode — single replica with hot-reload)
   stock_worker:
@@ -118,7 +117,7 @@ services:
     environment:
       MOCK_MODE: ${MOCK_MODE:-allSuccess}
       MOCK_PORT: 4000
-      FAILURE_RATE: ${FAILURE_RATE:-0.2}
+      FAILURE_RATE: ${FAILURE_RATE:-0.5}
       MAX_LATENCY_MS: ${MAX_LATENCY_MS:-500}
     ports:
       - "${MOCK_PORT:-4000}:4000"

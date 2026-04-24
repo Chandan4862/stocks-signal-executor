@@ -5,7 +5,6 @@ import { TelegramService } from "./services/telegramService";
 import { AuditLogService } from "./services/auditLogService";
 import { PostbackService } from "./services/postbackService";
 import { StateStore } from "./services/stateStore";
-import { TokenService } from "./services/tokenService";
 import { ConfigService } from "./services/configService";
 import { getRedis, closeRedis } from "./services/redisProvider";
 import { createQueues, closeQueues } from "./queues/queueRegistry";
@@ -34,24 +33,15 @@ async function main() {
   const queues = createQueues(redis);
   console.log(`✅ ${queues.size} BullMQ queues created`);
 
-  // --- Audit (global, with PG + notification queue) ---
-  const telegram = new TelegramService(
-    config.telegram.botToken,
-    config.telegram.loggerChatId,
-    config.telegram.userChatId,
-  );
+  // --- Telegram + Audit ---
+  const telegram = new TelegramService(config.telegram.botToken, config.telegram.loggerChatId);
   const notifQueue = queues.get("notification")!;
   const audit = new AuditLogService(store.pg, notifQueue);
+  telegram.setAudit(audit);
 
   // --- ConfigService (long-lived, backed by PG pool) ---
   const configSvc = new ConfigService(store.pg);
   await configSvc.load();
-  telegram.setConfigService(configSvc);
-
-  // --- Token Service (for legacy single-user /token + /renew commands) ---
-  const tokenService = new TokenService(config, store, audit);
-  telegram.setTokenService(tokenService);
-  telegram.setAudit(audit);
 
   // --- Multi-tenant services ---
   const userRepo = new UserRepository(store.pool);
@@ -60,8 +50,8 @@ async function main() {
 
   // --- Telegram multi-user handlers ---
   const userResolver = new UserResolverMiddleware(userRepo);
-  const onboardingHandler = new OnboardingHandler(userService, vault, redis);
-  const tradingHandler = new TradingHandler(userRepo, redis, queues);
+  const onboardingHandler = new OnboardingHandler(userService, vault);
+  const tradingHandler = new TradingHandler(userRepo, redis, queues, config);
   const configHandler = new ConfigHandler(store.pool);
 
   // Wire handlers into TelegramService
@@ -69,7 +59,6 @@ async function main() {
 
   // --- Scheduler (enqueue-only) ---
   const scheduler = new Scheduler(config, telegram, configSvc, queues, store, redis);
-  telegram.setScheduler(scheduler);
   scheduler.start();
 
   // --- Launch Telegram bot ---

@@ -63,7 +63,6 @@ export function createNotificationWorker(
       if (!targetChatId) {
         throw new Error(`No chat ID resolvable for notification job ${job.id}`);
       }
-
       await telegramSender.sendMessage(targetChatId, text, parseMode);
 
       return { sent: true, chatId: targetChatId, channel };

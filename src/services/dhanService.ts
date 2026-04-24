@@ -2,14 +2,13 @@
   DhanService: Interacts with Dhan API v2 for orders and related actions.
 
   Auth: Every request includes header `access-token: <JWT>`.
-  Tokens are managed by TokenService (24h validity, auto-renewable).
-  On 401/403, the cached token is invalidated and a fresh one is obtained.
+  Tokens are managed externally (Redis) and injected via setToken().
+  On 401/403, the HTTP client is invalidated so the caller can refresh.
 */
 
 import axios, { AxiosInstance, AxiosError } from "axios";
 import type { AppConfig } from "../config/schema";
 import { OrderState } from "../enums/trade";
-import { TokenService } from "./tokenService";
 
 export type TransactionType = "BUY" | "SELL";
 export type OrderType = "LIMIT" | "MARKET" | "STOP_LOSS" | "STOP_LOSS_MARKET";
@@ -220,13 +219,11 @@ export class DhanService {
 
   constructor(
     private cfg: AppConfig,
-    private tokens: TokenService | null,
     private audit: AuditLogService,
   ) {}
 
   /**
    * Directly set the access token (used by workers with per-user tokens from Redis).
-   * Bypasses TokenService entirely.
    */
   setToken(token: string): void {
     this.currentToken = token;
@@ -243,9 +240,8 @@ export class DhanService {
    * client is re-created with the new token.
    */
   private async ensureHttp(forceRefresh = false): Promise<AxiosInstance> {
-    // If TokenService is available, use it. Otherwise use directly-set token.
-    const token = this.tokens ? await this.tokens.getToken() : this.currentToken;
-    if (!token) throw new Error("Missing Dhan access token — trading paused");
+    const token = this.currentToken;
+    if (!token) throw new Error("Missing Dhan access token — call setToken() first");
 
     // Re-create client if token changed or forced
     if (!this.http || this.currentToken !== token || forceRefresh) {
@@ -309,12 +305,9 @@ export class DhanService {
           this.audit
             .warn(LifecycleEvents.ERROR_OCCURRED, {
               action: "DhanService.withAuthRetry",
-              error: "401/403 received — refreshing token and retrying",
+              error: "401/403 received — clearing HTTP client for token refresh",
             })
             .catch(() => {});
-          if (this.tokens) {
-            await this.tokens.invalidateToken();
-          }
           this.http = undefined;
           const http = await this.ensureHttp();
           return await fn(http); // retry once; let it throw if still fails

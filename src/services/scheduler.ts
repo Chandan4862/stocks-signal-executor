@@ -269,7 +269,7 @@ export class Scheduler {
     const monitorQueue = this.queues.get(QUEUE_NAMES.TRADE_MONITOR);
     if (!monitorQueue) return;
 
-    const timeSlot = DateTime.now().setZone("Asia/Kolkata").toFormat("HH:mm");
+    const timeSlot = DateTime.now().setZone("Asia/Kolkata").toFormat("HHmm");
     const traceId = `mon-${phase}-${todayKey()}-${timeSlot}`;
 
     for (const user of users) {
@@ -378,6 +378,7 @@ export class Scheduler {
   }
 
   private async enqueueTokenRenewalJobs(): Promise<void> {
+    console.log("Enqueuing token renewal jobs for all active users");
     const userRepo = new UserRepository(this.store.pool);
     const users = await userRepo.getActiveUsers();
     const tokenQueue = this.queues.get(QUEUE_NAMES.TOKEN_RENEWAL);

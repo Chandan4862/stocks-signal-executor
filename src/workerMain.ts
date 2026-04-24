@@ -8,7 +8,7 @@ import "dotenv/config";
 import { Pool } from "pg";
 import { loadConfig } from "./config";
 import { createBullMQConnection } from "./services/redisProvider";
-import { QUEUE_NAMES } from "./queues/queueRegistry";
+import { DEFAULT_JOB_OPTIONS, QUEUE_NAMES } from "./queues/queueRegistry";
 import { Queue } from "bullmq";
 import { createTradeExecutionWorker } from "./workers/tradeExecutionWorker";
 import { createMonitorWorker } from "./workers/monitorWorker";
@@ -50,6 +50,7 @@ async function main() {
   // ── Notification queue (for DLQ alerts from other workers) ──
   const notificationQueue = new Queue<NotificationJob>(QUEUE_NAMES.NOTIFICATION, {
     connection: queueConn,
+    defaultJobOptions: DEFAULT_JOB_OPTIONS[QUEUE_NAMES.NOTIFICATION],
   });
 
   // ── Create a simple Telegram sender for the notification worker ──

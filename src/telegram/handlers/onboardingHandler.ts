@@ -7,13 +7,11 @@
 import type { UserContext } from "../middleware/userResolver";
 import type { UserService } from "../../modules/user/userService";
 import type { CredentialVault, BrokerCredentials } from "../../modules/auth/credentialVault";
-import Redis from "ioredis";
 
 export class OnboardingHandler {
   constructor(
     private userService: UserService,
     private vault: CredentialVault,
-    private redis: Redis,
   ) {}
 
   /** /start — Welcome message */
@@ -95,13 +93,9 @@ export class OnboardingHandler {
 
     await ctx.reply(
       `✅ Dhan Client ID saved: ${clientId}\n\n` +
-        `Step 2/3: Choose your auth method:\n\n` +
-        `Option A (recommended):\n` +
+        `Step 2/3: Setup auth method:\n\n` +
         `Send your TOTP secret for automatic token generation.\n` +
-        `/setup_totp <pin> <totp_secret>\n\n` +
-        `Option B (manual):\n` +
-        `Paste an access token directly.\n` +
-        `/token <your_access_token>`,
+        `/setup_totp <pin> <totp_secret>\n\n`,
     );
   }
 
@@ -151,43 +145,6 @@ export class OnboardingHandler {
         `/status — Check token & trades\n` +
         `/config — View/edit settings\n` +
         `/pnl — View P&L`,
-    );
-  }
-
-  /** /token <access_token> — Manual token submission */
-  async handleToken(ctx: UserContext): Promise<void> {
-    const user = ctx.state.user;
-    if (!user) return;
-
-    const text = (ctx.message as any)?.text ?? "";
-    const parts = text.split(/\s+/);
-    const token = parts[1];
-
-    if (!token || token.length < 20) {
-      await ctx.reply("❌ Invalid token.\n\nUsage: /token <your_dhan_access_token>");
-      return;
-    }
-
-    // Delete the message (contains token)
-    try {
-      await ctx.deleteMessage();
-    } catch {}
-
-    // Store token in Redis
-    await this.redis.set(`token:${user.id}`, token, "EX", 86400); // 24h TTL
-
-    // If user was onboarding, mark as active
-    if (user.status === "ONBOARDING") {
-      await this.userService.markOnboarded(user.id);
-    }
-
-    await ctx.reply(
-      `✅ Token stored securely!\n` +
-        `⚠️ Your message was deleted for security.\n` +
-        `Token expires in ~24 hours.\n\n` +
-        (user.dhan_credentials_enc
-          ? `TOTP is configured — token will auto-renew.`
-          : `⚠️ Without TOTP, you'll need to send /token again daily.`),
     );
   }
 

@@ -39,7 +39,15 @@ export class TradeEntryService {
     for (const at of actives) {
       // Only process cash instruments
       if (!(await this.isCashInstrument(at, audit))) {
-        await this.logRecoScan(store, at, "SKIPPED", "Non-cash instrument");
+        await this.logRecoScan(
+          store,
+          at,
+          "SKIPPED",
+          "Non-cash instrument",
+          undefined,
+          undefined,
+          userId,
+        );
         continue;
       }
 
@@ -47,11 +55,20 @@ export class TradeEntryService {
 
       try {
         // Idempotency guard (Postgres-backed)
-        const idempRes = await store.pg.query(`SELECT 1 FROM idempotency WHERE action_key = $1`, [
-          `buy:${id}`,
-        ]);
+        const idempRes = await store.pg.query(
+          `SELECT 1 FROM idempotency WHERE action_key = $1 AND user_id = $2`,
+          [`buy:${id}`, userId],
+        );
         if (idempRes.rows.length > 0) {
-          await this.logRecoScan(store, at, "SKIPPED", "Already processed (idempotency)");
+          await this.logRecoScan(
+            store,
+            at,
+            "SKIPPED",
+            "Already processed (idempotency)",
+            undefined,
+            undefined,
+            userId,
+          );
           continue;
         }
 
@@ -67,7 +84,15 @@ export class TradeEntryService {
           userId,
         );
         if (!validated) {
-          await this.logRecoScan(store, at, "SKIPPED", "Validation failed");
+          await this.logRecoScan(
+            store,
+            at,
+            "SKIPPED",
+            "Validation failed",
+            undefined,
+            undefined,
+            userId,
+          );
           continue;
         }
 
@@ -77,14 +102,30 @@ export class TradeEntryService {
         // Persist state (idempotency, trade record, audit)
         await this.persistBuyState(store, audit, validated, buyRes, at, userId);
 
-        await this.logRecoScan(store, at, "PLACED", null, validated.entryPrice, validated.quantity);
+        await this.logRecoScan(
+          store,
+          at,
+          "PLACED",
+          null,
+          validated.entryPrice,
+          validated.quantity,
+          userId,
+        );
       } catch (err: any) {
         const payload =
           err instanceof DhanApiError
             ? { id: at.id, ...err.toAuditPayload() }
             : { id: at.id, error: String(err?.message || err) };
         await audit.critical(LifecycleEvents.ERROR_OCCURRED, payload);
-        await this.logRecoScan(store, at, "ERROR", err?.message ?? String(err));
+        await this.logRecoScan(
+          store,
+          at,
+          "ERROR",
+          err?.message ?? String(err),
+          undefined,
+          undefined,
+          userId,
+        );
       }
     }
   }
@@ -154,7 +195,7 @@ export class TradeEntryService {
 
     // ── Resolve securityId from instrument_list_nse_eq ────────────────
     if (!symbol) {
-      await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
+      await audit.error(LifecycleEvents.ERROR_OCCURRED, {
         id,
         reason: "Missing sc_symbol — cannot resolve securityId",
       });
@@ -163,7 +204,7 @@ export class TradeEntryService {
 
     const securityId = await instrumentLookup.resolveSecurityId(symbol);
     if (!securityId) {
-      await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
+      await audit.error(LifecycleEvents.ERROR_OCCURRED, {
         id,
         reason: "No instrument found in instrument_list_nse_eq",
         symbol,
@@ -315,8 +356,8 @@ export class TradeEntryService {
   ): Promise<void> {
     // Set idempotency guard
     await store.pg.query(
-      `INSERT INTO idempotency (action_key) VALUES ($1) ON CONFLICT DO NOTHING`,
-      [`buy:${v.id}`],
+      `INSERT INTO idempotency (action_key, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [`buy:${v.id}`, userId],
     );
 
     // Upsert trade record with all fields
@@ -381,18 +422,13 @@ export class TradeEntryService {
     skipReason: string | null,
     entryPrice?: number,
     quantity?: number,
+    userId?: number,
   ): Promise<void> {
     try {
       await store.pg.query(
-        `INSERT INTO reco_scan_log (reco_id, symbol, outcome, skip_reason, entry_price, quantity, reco)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (reco_id) DO UPDATE SET
-           outcome = EXCLUDED.outcome,
-           skip_reason = EXCLUDED.skip_reason,
-           entry_price = COALESCE(EXCLUDED.entry_price, reco_scan_log.entry_price),
-           quantity = COALESCE(EXCLUDED.quantity, reco_scan_log.quantity),
-           reco = EXCLUDED.reco,
-           scanned_at = NOW()`,
+        `INSERT INTO reco_scan_log (reco_id, symbol, outcome, skip_reason, entry_price, quantity, reco, user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT DO NOTHING`,
         [
           at.id,
           String(at.sc_symbol || "").toUpperCase() || null,
@@ -401,6 +437,7 @@ export class TradeEntryService {
           entryPrice ?? null,
           quantity ?? null,
           JSON.stringify(at),
+          userId ?? null,
         ],
       );
     } catch {

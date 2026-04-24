@@ -91,7 +91,6 @@ export class AuditLogService {
         console.error("AuditLogService: DB write failed:", err?.message);
       }
     }
-
     // 3. Enqueue notification for ERROR and CRITICAL → admin channel (loggerChatId)
     if (this.notifQueue && level >= LogLevel.ERROR) {
       try {
@@ -104,8 +103,9 @@ export class AuditLogService {
           traceId: payload.traceId ?? `audit-${Date.now()}`,
           enqueuedAt: new Date().toISOString(),
         });
-      } catch {
+      } catch (err: any) {
         // Queue failure should never break the main flow
+        console.error("AuditLogService: Queue write failed:", err?.message);
       }
     }
   }
@@ -135,12 +135,13 @@ export class AuditLogService {
   }
 
   /* ------------------------------------------------------------------ */
-  /*  Trade notification (enqueued to trades channel → userChatId)       */
+  /*  Trade notification (per-user → telegram_chat_id from DB)           */
   /* ------------------------------------------------------------------ */
 
   /**
-   * Enqueue a trade notification to the trades channel (userChatId).
-   * Used for trade entry/exit/SL/target alerts.
+   * Enqueue a trade notification for this user.
+   * Uses 'default' channel → NotificationWorker resolves the user's
+   * personal telegram_chat_id from the database.
    */
   async notify(text: string): Promise<void> {
     if (this.notifQueue) {
@@ -148,7 +149,7 @@ export class AuditLogService {
         await this.notifQueue.add("trade-alert", {
           userId: this.userId ?? 0,
           text,
-          channel: "trades",
+          channel: "default",
           traceId: `notify-${Date.now()}`,
           enqueuedAt: new Date().toISOString(),
         });

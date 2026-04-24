@@ -22,6 +22,18 @@
 import { Router } from "express";
 import { store } from "./state";
 
+// securityId → tradingSymbol mapping (matches instrument_list_nse_eq in test DB)
+const SYMBOL_MAP: Record<string, string> = {
+  "2885": "RELIANCE",
+  "1594": "INFY",
+  "11536": "TCS",
+  "1333": "HDFCBANK",
+};
+
+function resolveSymbol(securityId: string, fallback?: string): string {
+  return SYMBOL_MAP[securityId] || fallback || `SYM_${securityId}`;
+}
+
 const router = Router();
 
 // ─── Regular Orders ───────────────────────────────────────────────────
@@ -52,7 +64,7 @@ router.post("/v2/orders", (req, res) => {
     productType: body.productType || "CNC",
     orderType: body.orderType || "MARKET",
     validity: body.validity || "DAY",
-    tradingSymbol: body.tradingSymbol || "UNKNOWN",
+    tradingSymbol: body.tradingSymbol || resolveSymbol(body.securityId),
     securityId: body.securityId || "0",
     quantity: body.quantity || 1,
     price: body.price || 0,
@@ -133,7 +145,7 @@ router.post("/v2/forever/orders", (req, res) => {
     exchangeSegment: body.exchangeSegment || "NSE_EQ",
     productType: body.productType || "CNC",
     orderType: body.orderType || "LIMIT",
-    tradingSymbol: body.tradingSymbol || "UNKNOWN",
+    tradingSymbol: body.tradingSymbol || resolveSymbol(body.securityId),
     securityId: body.securityId || "0",
     quantity: body.quantity || 1,
     price: body.price || 0,
@@ -234,6 +246,19 @@ router.post("/admin/trigger-forever/:orderId", (req, res) => {
     `  ⚡ Forever order triggered: ${req.params.orderId} → regular order ${fo.triggeredOrderId}`,
   );
   res.json({ triggered: true, foreverOrderId: fo.orderId, regularOrderId: fo.triggeredOrderId });
+});
+
+/** POST /admin/holding-ltp — Update a holding's last traded price */
+router.post("/admin/holding-ltp", (req, res) => {
+  const { securityId, lastTradedPrice } = req.body;
+  const holding = store.holdings.get(String(securityId));
+  if (!holding) {
+    return res.status(404).json({ error: "Holding not found", securityId });
+  }
+  holding.lastTradedPrice = lastTradedPrice;
+  holding.pnl = (lastTradedPrice - holding.avgCostPrice) * holding.totalQty;
+  console.log(`  📊 Holding LTP updated: ${holding.tradingSymbol} → ₹${lastTradedPrice}`);
+  res.json({ updated: true, symbol: holding.tradingSymbol, lastTradedPrice });
 });
 
 /** POST /admin/reset — Reset all state */

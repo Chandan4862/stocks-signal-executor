@@ -224,15 +224,20 @@ export class TradeHelpers {
   /**
    * Record realized PnL into pnl_records table.
    */
-  static async recordPnl(store: StateStore, tradeRow: any, exitPrice: number): Promise<void> {
+  static async recordPnl(
+    store: StateStore,
+    tradeRow: any,
+    exitPrice: number,
+    userId?: number,
+  ): Promise<void> {
     try {
       const entryPrice = Number(tradeRow.entry_price);
       const quantity = Number(tradeRow.quantity);
       const pnl = (exitPrice - entryPrice) * quantity;
 
       await store.pg.query(
-        `INSERT INTO pnl_records (trade_id, tradingsymbol, quantity, entry_price, exit_price, realized_pnl, exited_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+        `INSERT INTO pnl_records (trade_id, tradingsymbol, quantity, entry_price, exit_price, realized_pnl, exited_at, user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)`,
         [
           tradeRow.id,
           tradeRow.tradingsymbol || tradeRow.symbol,
@@ -240,6 +245,7 @@ export class TradeHelpers {
           entryPrice,
           exitPrice,
           pnl,
+          userId ?? tradeRow.user_id ?? null,
         ],
       );
     } catch (err: any) {

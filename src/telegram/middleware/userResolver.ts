@@ -24,6 +24,8 @@ export class UserResolverMiddleware {
   middleware(): MiddlewareFn<UserContext> {
     return async (ctx, next) => {
       const chatId = String(ctx.chat?.id ?? "");
+      // chatId 8032657168
+      console.log("CHAT ID: ", chatId);
       if (!chatId) {
         return next();
       }

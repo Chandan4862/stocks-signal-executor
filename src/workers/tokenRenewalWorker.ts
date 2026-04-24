@@ -37,7 +37,6 @@ export function createTokenRenewalWorker(
     QUEUE_NAMES.TOKEN_RENEWAL,
     async (job: Job<TokenRenewalJob>) => {
       const { userId, action } = job.data;
-
       const userRepo = new UserRepository(pool);
       const user = await userRepo.findById(userId);
       if (!user || !user.dhan_client_id) {

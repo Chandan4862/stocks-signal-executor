@@ -56,7 +56,7 @@ export interface TokenRenewalJob extends BaseJob {
  * BullMQ deduplicates by jobId — same ID = same job, won't re-enqueue.
  */
 export function makeJobId(parts: (string | number)[]): string {
-  return parts.join(":");
+  return parts.join("-");
 }
 
 /**

@@ -53,11 +53,7 @@ export function createTradeExecutionWorker(
 
       // 3. Create user-scoped services
       const audit = new AuditLogService(pool, notificationQueue, userId);
-      const dhan = new DhanService(
-        { ...cfg, dhan: { clientId: user.dhan_client_id } },
-        null, // No TokenService — token injected directly
-        audit,
-      );
+      const dhan = new DhanService({ ...cfg, dhan: { clientId: user.dhan_client_id } }, audit);
       dhan.setToken(token);
 
       // 4. Create a user-scoped StateStore wrapper
