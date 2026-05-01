@@ -6,13 +6,27 @@
 
 set -euo pipefail
 
+# ── Cron-safe environment ────────────────────────────────────────────
+# Cron runs with a minimal PATH (/usr/bin:/bin). Export a full PATH so
+# docker, git, gzip, etc. are discoverable.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BACKUP_DIR="${PROJECT_DIR}/backups"
 CONTAINER_NAME="stocks-executor-postgres"
+RETENTION_DAYS=7
+
+# Load environment variables from .env if present (PG_USER, PG_DATABASE, etc.)
+if [ -f "${PROJECT_DIR}/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "${PROJECT_DIR}/.env"
+    set +a
+fi
+
 DB_USER="${PG_USER:-postgres}"
 DB_NAME="${PG_DATABASE:-stocks_executor}"
-RETENTION_DAYS=7
 
 # Create backup directory if it doesn't exist
 mkdir -p "$BACKUP_DIR"
