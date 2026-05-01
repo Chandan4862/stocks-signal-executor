@@ -32,3 +32,6 @@ fatal: unable to access 'https://github.com/Chandan4862/stocks-signal-executor.g
 [Sun Apr  5 20:00:01 UTC 2026] Starting Postgres backup...
 [Sun Apr  5 20:00:02 UTC 2026] Backup saved: /home/ubuntu/stocks-signal-executor/backups/db-2026-04-05_2000.sql.gz (204K)
 [Sun Apr  5 20:00:02 UTC 2026] Pruned old backups. 4 backup(s) retained.
+[Fri May  1 20:00:01 UTC 2026] Starting Postgres backup...
+[Fri May  1 20:00:02 UTC 2026] Backup saved: /home/ubuntu/stocks-signal-executor/backups/db-2026-05-01_2000.sql.gz (252K)
+[Fri May  1 20:00:02 UTC 2026] Pruned old backups. 6 backup(s) retained.
