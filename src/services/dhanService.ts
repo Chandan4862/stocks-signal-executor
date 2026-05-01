@@ -112,12 +112,9 @@ const DHAN_ERROR_DESCRIPTIONS: Record<string, string> = {
     "Too many requests on server from single user breaching rate limits. Try throttling API calls.",
   "DH-905": "Missing required fields, bad values for parameters etc.",
   "DH-906": "Incorrect request for order and cannot be processed.",
-  "DH-907":
-    "System is unable to fetch data due to incorrect parameters or no data present.",
-  "DH-908":
-    "Server was not able to process API request. This will only occur rarely.",
-  "DH-909":
-    "Network error where the API was unable to communicate with the backend system.",
+  "DH-907": "System is unable to fetch data due to incorrect parameters or no data present.",
+  "DH-908": "Server was not able to process API request. This will only occur rarely.",
+  "DH-909": "Network error where the API was unable to communicate with the backend system.",
   "DH-910": "Error originating from other reasons.",
 };
 
@@ -174,17 +171,11 @@ export class DhanApiError extends Error {
     const status = err.response?.status;
     const body = err.response?.data as any;
 
-    const dhanErrorCode =
-      body?.errorCode ?? body?.internalErrorCode ?? undefined;
+    const dhanErrorCode = body?.errorCode ?? body?.internalErrorCode ?? undefined;
     const dhanMessage =
-      body?.errorMessage ??
-      body?.internalErrorMessage ??
-      body?.message ??
-      undefined;
+      body?.errorMessage ?? body?.internalErrorMessage ?? body?.message ?? undefined;
 
-    const description = dhanErrorCode
-      ? (DHAN_ERROR_DESCRIPTIONS[dhanErrorCode] ?? "")
-      : "";
+    const description = dhanErrorCode ? (DHAN_ERROR_DESCRIPTIONS[dhanErrorCode] ?? "") : "";
 
     const message = [
       `Dhan API ${status ?? "?"}: ${err.message}`,
@@ -209,10 +200,7 @@ export class DhanApiError extends Error {
    * Create a DhanApiError from a successful HTTP response where orderStatus
    * indicates rejection.
    */
-  static fromRejectedOrder(
-    response: PlaceOrderResponse,
-    requestBody?: any,
-  ): DhanApiError {
+  static fromRejectedOrder(response: PlaceOrderResponse, requestBody?: any): DhanApiError {
     return new DhanApiError({
       message: `Dhan order ${response.orderStatus}: orderId=${response.orderId}`,
       httpStatus: 200,
@@ -253,9 +241,7 @@ export class DhanService {
     if (!this.http || this.currentToken !== token || forceRefresh) {
       this.currentToken = token;
       const baseURL =
-        this.cfg.env === "development"
-          ? "https://sandbox.dhan.co/v2"
-          : "https://api.dhan.co/v2";
+        this.cfg.env === "development" ? "https://sandbox.dhan.co/v2" : "https://api.dhan.co/v2";
 
       this.http = axios.create({
         baseURL,
@@ -364,10 +350,7 @@ export class DhanService {
    * Dhan can return HTTP 200 with orderStatus = REJECTED/CANCELLED/EXPIRED.
    * In those cases, the order was NOT placed — we must throw.
    */
-  private assertOrderAccepted(
-    res: PlaceOrderResponse,
-    requestBody?: any,
-  ): void {
+  private assertOrderAccepted(res: PlaceOrderResponse, requestBody?: any): void {
     const rejected = ["REJECTED", "CANCELLED", "EXPIRED"];
     if (rejected.includes(res.orderStatus)) {
       throw DhanApiError.fromRejectedOrder(res, requestBody);
@@ -386,14 +369,9 @@ export class DhanService {
     }, req);
   }
 
-  async placeSuperOrder(
-    req: PlaceSuperOrderRequest,
-  ): Promise<PlaceOrderResponse> {
+  async placeSuperOrder(req: PlaceSuperOrderRequest): Promise<PlaceOrderResponse> {
     return this.withAuthRetry(async (http) => {
-      const { data } = await http.post<PlaceOrderResponse>(
-        "/super/orders",
-        req,
-      );
+      const { data } = await http.post<PlaceOrderResponse>("/super/orders", req);
       this.assertOrderAccepted(data, req);
       return data;
     }, req);
@@ -412,17 +390,12 @@ export class DhanService {
         orderId,
         ...req,
       };
-      const { data } = await http.put<PlaceOrderResponse>(
-        `/orders/${orderId}`,
-        body,
-      );
+      const { data } = await http.put<PlaceOrderResponse>(`/orders/${orderId}`, body);
       return data;
     }, req);
   }
 
-  async cancelOrder(
-    orderId: string,
-  ): Promise<{ orderId: string; orderStatus: string }> {
+  async cancelOrder(orderId: string): Promise<{ orderId: string; orderStatus: string }> {
     return this.withAuthRetry(async (http) => {
       const { data } = await http.delete<{
         orderId: string;
@@ -436,14 +409,9 @@ export class DhanService {
   /*  Forever Order (GTT) operations                                    */
   /* ------------------------------------------------------------------ */
 
-  async placeForeverOrder(
-    req: PlaceForeverOrderRequest,
-  ): Promise<PlaceOrderResponse> {
+  async placeForeverOrder(req: PlaceForeverOrderRequest): Promise<PlaceOrderResponse> {
     return this.withAuthRetry(async (http) => {
-      const { data } = await http.post<PlaceOrderResponse>(
-        "/forever/orders",
-        req,
-      );
+      const { data } = await http.post<PlaceOrderResponse>("/forever/orders", req);
       this.assertOrderAccepted(data, req);
       return data;
     }, req);
@@ -454,17 +422,12 @@ export class DhanService {
     req: ModifyForeverOrderRequest,
   ): Promise<PlaceOrderResponse> {
     return this.withAuthRetry(async (http) => {
-      const { data } = await http.put<PlaceOrderResponse>(
-        `/forever/orders/${orderId}`,
-        req,
-      );
+      const { data } = await http.put<PlaceOrderResponse>(`/forever/orders/${orderId}`, req);
       return data;
     }, req);
   }
 
-  async cancelForeverOrder(
-    orderId: string,
-  ): Promise<{ orderId: string; orderStatus: string }> {
+  async cancelForeverOrder(orderId: string): Promise<{ orderId: string; orderStatus: string }> {
     return this.withAuthRetry(async (http) => {
       const { data } = await http.delete<{
         orderId: string;

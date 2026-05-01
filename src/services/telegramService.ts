@@ -99,11 +99,7 @@ export class TelegramService {
         );
 
         if (attempt >= MAX_RETRIES) {
-          this.logWarn(
-            "launch",
-            "Bot launch exhausted all retries — giving up",
-            err,
-          );
+          this.logWarn("launch", "Bot launch exhausted all retries — giving up", err);
           this.launched = false;
           return;
         }
@@ -176,10 +172,9 @@ export class TelegramService {
 
     // /start — welcome
     this.bot.start((ctx) => {
-      ctx.reply(
-        "🤖 *Stocks Signal Executor* is online\\.\nType /status for a health check\\.",
-        { parse_mode: "MarkdownV2" },
-      );
+      ctx.reply("🤖 *Stocks Signal Executor* is online\\.\nType /status for a health check\\.", {
+        parse_mode: "MarkdownV2",
+      });
     });
 
     // /status — quick health check (now includes token validity)
@@ -208,9 +203,7 @@ export class TelegramService {
         }
       }
 
-      ctx.reply(
-        `✅ Bot is running.\nUptime: ${mins}m ${secs}s\n\n🔑 Auth: ${tokenInfo}`,
-      );
+      ctx.reply(`✅ Bot is running.\nUptime: ${mins}m ${secs}s\n\n🔑 Auth: ${tokenInfo}`);
     });
 
     // /positions — stub for now
@@ -295,9 +288,7 @@ export class TelegramService {
       try {
         const currentToken = await this.tokenService.getToken();
         if (!currentToken) {
-          ctx.reply(
-            "❌ No active token to renew. Submit one with /token first.",
-          );
+          ctx.reply("❌ No active token to renew. Submit one with /token first.");
           return;
         }
 
@@ -397,9 +388,7 @@ export class TelegramService {
       }
 
       ctx.reply(
-        "Usage:\n" +
-          "  /config — show all values\n" +
-          "  /config <key> <value> — update a value",
+        "Usage:\n" + "  /config — show all values\n" + "  /config <key> <value> — update a value",
       );
     });
 

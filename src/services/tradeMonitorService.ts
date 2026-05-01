@@ -51,21 +51,12 @@ export class TradeMonitorService {
       const regularOrders = await dhan.getOrders();
 
       for (const tradeRow of pendingRes.rows) {
-        const foreverOrder = TradeHelpers.findForeverOrder(
-          foreverOrders,
-          tradeRow.buy_order_id,
-        );
+        const foreverOrder = TradeHelpers.findForeverOrder(foreverOrders, tradeRow.buy_order_id);
 
         if (foreverOrder) {
           // Forever order found — check its status
           if (foreverOrder.orderStatus === "TRIGGERED") {
-            await this.handleTriggeredEntry(
-              store,
-              dhan,
-              audit,
-              tradeRow,
-              regularOrders,
-            );
+            await this.handleTriggeredEntry(store, dhan, audit, tradeRow, regularOrders);
           } else if (
             foreverOrder.orderStatus === "CANCELLED" ||
             foreverOrder.orderStatus === "EXPIRED"
@@ -82,10 +73,7 @@ export class TradeMonitorService {
           // S5: No forever order found — check /orders for TRADED child (startup recovery)
           // This catches entries that triggered while server was down and
           // /forever/orders no longer shows TRIGGERED.
-          const childOrder = TradeHelpers.findChildOrder(
-            regularOrders,
-            tradeRow.buy_order_id,
-          );
+          const childOrder = TradeHelpers.findChildOrder(regularOrders, tradeRow.buy_order_id);
 
           if (childOrder && childOrder.orderStatus === "TRADED") {
             const tradedPrice = TradeHelpers.resolveChildPrice(
@@ -155,9 +143,7 @@ export class TradeMonitorService {
 
         // Find matching holding by tradingSymbol
         const holding = holdings.find(
-          (h) =>
-            String(h.tradingSymbol).toUpperCase() ===
-            String(tradeRow.symbol).toUpperCase(),
+          (h) => String(h.tradingSymbol).toUpperCase() === String(tradeRow.symbol).toUpperCase(),
         );
 
         if (!holding || holding.totalQty <= 0) continue;
@@ -166,10 +152,10 @@ export class TradeMonitorService {
         if (!lastTradedPrice || lastTradedPrice <= 0) continue;
 
         // Persist LTP on every tick for live tracking
-        await store.pg.query(
-          `UPDATE trades SET ltp = $1 WHERE id = $2`,
-          [lastTradedPrice, tradeRow.id],
-        );
+        await store.pg.query(`UPDATE trades SET ltp = $1 WHERE id = $2`, [
+          lastTradedPrice,
+          tradeRow.id,
+        ]);
 
         const target = Number(tradeRow.target) || null;
         const sl = Number(tradeRow.sl_trigger) || null;
@@ -207,10 +193,7 @@ export class TradeMonitorService {
     tradeRow: any,
     regularOrders: any[],
   ): Promise<void> {
-    const childOrder = TradeHelpers.findChildOrder(
-      regularOrders,
-      tradeRow.buy_order_id,
-    );
+    const childOrder = TradeHelpers.findChildOrder(regularOrders, tradeRow.buy_order_id);
 
     if (!childOrder) {
       // Child order not yet visible in /orders — wait for next tick
@@ -218,10 +201,7 @@ export class TradeMonitorService {
     }
 
     if (childOrder.orderStatus === "TRADED") {
-      const tradedPrice = TradeHelpers.resolveChildPrice(
-        childOrder,
-        Number(tradeRow.entry_price),
-      );
+      const tradedPrice = TradeHelpers.resolveChildPrice(childOrder, Number(tradeRow.entry_price));
       const qty = childOrder.filledQty || tradeRow.quantity;
 
       await TradeHelpers.markEntered(
@@ -232,13 +212,8 @@ export class TradeMonitorService {
         qty,
         "monitorPendingEntries",
       );
-    } else if (
-      childOrder.orderStatus === "REJECTED" ||
-      childOrder.orderStatus === "CANCELLED"
-    ) {
-      const reason =
-        childOrder.omsErrorDescription ||
-        `Child order ${childOrder.orderStatus}`;
+    } else if (childOrder.orderStatus === "REJECTED" || childOrder.orderStatus === "CANCELLED") {
+      const reason = childOrder.omsErrorDescription || `Child order ${childOrder.orderStatus}`;
 
       await this.markCancelled(store, audit, tradeRow, reason);
     }
@@ -254,10 +229,9 @@ export class TradeMonitorService {
     tradeRow: any,
     reason: string,
   ): Promise<void> {
-    await store.pg.query(
-      `UPDATE trades SET state = '${TradeState.CANCELLED}' WHERE id = $1`,
-      [tradeRow.id],
-    );
+    await store.pg.query(`UPDATE trades SET state = '${TradeState.CANCELLED}' WHERE id = $1`, [
+      tradeRow.id,
+    ]);
 
     await audit.warn(LifecycleEvents.ERROR_OCCURRED, {
       id: tradeRow.id,
@@ -266,9 +240,7 @@ export class TradeMonitorService {
     });
 
     await audit.notify(
-      `⛔ Entry CANCELLED\n` +
-        `Symbol: ${tradeRow.symbol}\n` +
-        `Reason: ${reason}`,
+      `⛔ Entry CANCELLED\n` + `Symbol: ${tradeRow.symbol}\n` + `Reason: ${reason}`,
     );
   }
 }

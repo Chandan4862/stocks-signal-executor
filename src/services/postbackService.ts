@@ -22,13 +22,7 @@ export interface PostbackPayload {
   dhanClientId: string;
   orderId: string;
   correlationId: string;
-  orderStatus:
-    | "TRANSIT"
-    | "PENDING"
-    | "REJECTED"
-    | "CANCELLED"
-    | "TRADED"
-    | "EXPIRED";
+  orderStatus: "TRANSIT" | "PENDING" | "REJECTED" | "CANCELLED" | "TRADED" | "EXPIRED";
   transactionType: "BUY" | "SELL";
   exchangeSegment: string;
   productType: string;
@@ -188,10 +182,7 @@ export class PostbackService {
   /*  Buy order updates (AWAITING_ENTRY state)                           */
   /* ------------------------------------------------------------------ */
 
-  private async handleBuyOrderUpdate(
-    trade: any,
-    payload: PostbackPayload,
-  ): Promise<void> {
+  private async handleBuyOrderUpdate(trade: any, payload: PostbackPayload): Promise<void> {
     const { orderId, orderStatus, price } = payload;
 
     if (trade.state !== TradeState.AWAITING_ENTRY) return;
@@ -211,8 +202,7 @@ export class PostbackService {
       await this.audit.info(LifecycleEvents.BUY_PLACED, {
         id: trade.id,
         source: "postback",
-        message:
-          "Entry order TRADED (via postback). Awaiting OCO placement by scheduler.",
+        message: "Entry order TRADED (via postback). Awaiting OCO placement by scheduler.",
         tradedPrice,
         orderId,
       });
@@ -224,10 +214,9 @@ export class PostbackService {
           `OCO exit will be placed on next tick.`,
       );
     } else if (["CANCELLED", "REJECTED", "EXPIRED"].includes(orderStatus)) {
-      await this.pg.query(
-        `UPDATE trades SET state = '${TradeState.CANCELLED}' WHERE id = $1`,
-        [trade.id],
-      );
+      await this.pg.query(`UPDATE trades SET state = '${TradeState.CANCELLED}' WHERE id = $1`, [
+        trade.id,
+      ]);
 
       await this.audit.warn(LifecycleEvents.ERROR_OCCURRED, {
         id: trade.id,
@@ -242,9 +231,7 @@ export class PostbackService {
         `⚡ POSTBACK: Entry ${orderStatus}\n` +
           `Symbol: ${trade.symbol}\n` +
           `Order: ${orderId}` +
-          (payload.omsErrorDescription
-            ? `\nReason: ${payload.omsErrorDescription}`
-            : ""),
+          (payload.omsErrorDescription ? `\nReason: ${payload.omsErrorDescription}` : ""),
       );
     }
   }
@@ -253,10 +240,7 @@ export class PostbackService {
   /*  Exit order updates (ENTERED state)                                 */
   /* ------------------------------------------------------------------ */
 
-  private async handleExitOrderUpdate(
-    trade: any,
-    payload: PostbackPayload,
-  ): Promise<void> {
+  private async handleExitOrderUpdate(trade: any, payload: PostbackPayload): Promise<void> {
     const { orderId, orderStatus, price } = payload;
 
     if (trade.state !== TradeState.ENTERED) return;
@@ -280,14 +264,7 @@ export class PostbackService {
         await this.pg.query(
           `INSERT INTO pnl_records (trade_id, tradingsymbol, quantity, entry_price, exit_price, realized_pnl, exited_at)
            VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-          [
-            trade.id,
-            trade.tradingsymbol || trade.symbol,
-            qty,
-            entryPrice,
-            exitPrice,
-            pnl,
-          ],
+          [trade.id, trade.tradingsymbol || trade.symbol, qty, entryPrice, exitPrice, pnl],
         );
       } catch {}
 

@@ -76,9 +76,7 @@ function parseCsv(raw: string): InstrumentRow[] {
   const header = parseCsvLine(lines[0]).map((h) => h.trim().toUpperCase());
   for (const col of EXPECTED_COLUMNS) {
     if (!header.includes(col)) {
-      throw new Error(
-        `Missing expected column "${col}" in CSV header: ${header.join(", ")}`,
-      );
+      throw new Error(`Missing expected column "${col}" in CSV header: ${header.join(", ")}`);
     }
   }
 
@@ -196,9 +194,7 @@ async function main(): Promise<void> {
 
     console.log("⏳ Inserting rows ...");
     const count = await batchInsert(pg, rows);
-    console.log(
-      `\n✔ Successfully loaded ${count} instruments into instrument_list_nse_eq`,
-    );
+    console.log(`\n✔ Successfully loaded ${count} instruments into instrument_list_nse_eq`);
 
     // 6. Quick sanity check
     const { rows: sample } = await pg.query(

@@ -46,17 +46,11 @@ export class TradeEntryService {
 
       try {
         // Idempotency guard (Postgres-backed)
-        const idempRes = await store.pg.query(
-          `SELECT 1 FROM idempotency WHERE action_key = $1`,
-          [`buy:${id}`],
-        );
+        const idempRes = await store.pg.query(`SELECT 1 FROM idempotency WHERE action_key = $1`, [
+          `buy:${id}`,
+        ]);
         if (idempRes.rows.length > 0) {
-          await this.logRecoScan(
-            store,
-            at,
-            "SKIPPED",
-            "Already processed (idempotency)",
-          );
+          await this.logRecoScan(store, at, "SKIPPED", "Already processed (idempotency)");
           continue;
         }
 
@@ -81,14 +75,7 @@ export class TradeEntryService {
         // Persist state (idempotency, trade record, audit)
         await this.persistBuyState(store, audit, validated, buyRes, at);
 
-        await this.logRecoScan(
-          store,
-          at,
-          "PLACED",
-          null,
-          validated.entryPrice,
-          validated.quantity,
-        );
+        await this.logRecoScan(store, at, "PLACED", null, validated.entryPrice, validated.quantity);
       } catch (err: any) {
         const payload =
           err instanceof DhanApiError
@@ -106,10 +93,7 @@ export class TradeEntryService {
    * Guard: returns true if the ActiveTrade is a cash instrument.
    * Logs SKIP_TRADE audit for non-cash.
    */
-  private async isCashInstrument(
-    at: ActiveTrade,
-    audit: AuditLogService,
-  ): Promise<boolean> {
+  private async isCashInstrument(at: ActiveTrade, audit: AuditLogService): Promise<boolean> {
     if (at.instrument_type !== InstrumentType.CASH) {
       await audit.debug(LifecycleEvents.SKIP_TRADE, {
         id: at.id,
@@ -186,8 +170,7 @@ export class TradeEntryService {
     const cmp = at.cmp ?? 0;
 
     // ── Resolve entry price ──────────────────────────────────────────
-    const entryPrice =
-      (typeof at.entry_price === "number" ? at.entry_price : undefined) ?? cmp;
+    const entryPrice = (typeof at.entry_price === "number" ? at.entry_price : undefined) ?? cmp;
     if (!entryPrice || entryPrice <= 0) {
       audit.record(LifecycleEvents.ERROR_OCCURRED, {
         id,
@@ -197,13 +180,11 @@ export class TradeEntryService {
       return null;
     }
 
-    const entryPrice2 =
-      typeof at.entry_price_2 === "number" ? at.entry_price_2 : undefined;
+    const entryPrice2 = typeof at.entry_price_2 === "number" ? at.entry_price_2 : undefined;
     const entryCondition = at.entry_condition || "";
 
     // ── Resolve capital & quantity ───────────────────────────────────
-    const perTradeCapital =
-      (at as any)?.meta?.max_capital ?? configSvc.perTradeCapital;
+    const perTradeCapital = (at as any)?.meta?.max_capital ?? configSvc.perTradeCapital;
     const qty = qtyResolver.deriveQty(entryPrice, Number(perTradeCapital));
     if (!qty || qty <= 0) {
       audit.record(LifecycleEvents.ERROR_OCCURRED, {

@@ -47,11 +47,7 @@ function createStore(
     existingIdempotencyKeys?: string[];
   } = {},
 ) {
-  const {
-    openCount = 0,
-    deployedCapital = 0,
-    existingIdempotencyKeys = [],
-  } = opts;
+  const { openCount = 0, deployedCapital = 0, existingIdempotencyKeys = [] } = opts;
   const executedQueries: { sql: string; params: any[] }[] = [];
 
   class StoreStub extends StateStore {
@@ -110,11 +106,13 @@ function createStore(
 class ConfigServiceStub {
   private values: Record<string, number>;
 
-  constructor(overrides: Partial<{
-    maxTradeCapital: number;
-    perTradeCapital: number;
-    maxActiveTrades: number;
-  }> = {}) {
+  constructor(
+    overrides: Partial<{
+      maxTradeCapital: number;
+      perTradeCapital: number;
+      maxActiveTrades: number;
+    }> = {},
+  ) {
     this.values = {
       maxTradeCapital: overrides.maxTradeCapital ?? 100000,
       perTradeCapital: overrides.perTradeCapital ?? 10000,
@@ -125,9 +123,15 @@ class ConfigServiceStub {
     };
   }
 
-  get maxTradeCapital() { return this.values.maxTradeCapital; }
-  get perTradeCapital() { return this.values.perTradeCapital; }
-  get maxActiveTrades() { return this.values.maxActiveTrades; }
+  get maxTradeCapital() {
+    return this.values.maxTradeCapital;
+  }
+  get perTradeCapital() {
+    return this.values.perTradeCapital;
+  }
+  get maxActiveTrades() {
+    return this.values.maxActiveTrades;
+  }
   get tsl() {
     return {
       incrementRs: this.values.tsl_increment_rs,
@@ -154,23 +158,37 @@ class TradeSyncStub extends TradeSyncService {
 
   // Delegate to TradeEntryService — keeps all test call-sites unchanged
   async runBuyAndInitialSl(
-    store: any, dhan: any, qtyResolver: any, tslService: any,
-    audit: any, instrumentLookup: any, configSvc?: any,
+    store: any,
+    dhan: any,
+    qtyResolver: any,
+    tslService: any,
+    audit: any,
+    instrumentLookup: any,
+    configSvc?: any,
   ): Promise<void> {
     const actives = await this.fetchActiveTrades();
     return this.entryService.runBuyAndInitialSl(
-      store, dhan, qtyResolver, tslService, audit, instrumentLookup, actives,
+      store,
+      dhan,
+      qtyResolver,
+      tslService,
+      audit,
+      instrumentLookup,
+      actives,
       configSvc ?? new ConfigServiceStub(),
     );
   }
 }
 
 // ─── Helper ─────────────────────────────────────────────────────────────────
-function createServices(store: StateStore, configOverrides: Partial<{
-  maxTradeCapital: number;
-  perTradeCapital: number;
-  maxActiveTrades: number;
-}> = {}) {
+function createServices(
+  store: StateStore,
+  configOverrides: Partial<{
+    maxTradeCapital: number;
+    perTradeCapital: number;
+    maxActiveTrades: number;
+  }> = {},
+) {
   const configSvc = new ConfigServiceStub(configOverrides);
   const audit = new AuditLogService((store as any).pg);
   const dhan = new DhanStub(baseCfg, {} as any, audit);
@@ -203,8 +221,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("skips ALL trades when maxActiveTrades is already reached", async () => {
     const store = createStore(baseCfg, { openCount: 10 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
-      createServices(store);
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } = createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg);
 
     await tradeSync.runBuyAndInitialSl(
@@ -223,8 +240,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("allows trade when 1 slot remains (9 open + new = 10 max)", async () => {
     const store = createStore(baseCfg, { openCount: 9 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
-      createServices(store);
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } = createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
     await tradeSync.runBuyAndInitialSl(
@@ -248,8 +264,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       openCount: 5,
       deployedCapital: 95000,
     });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
-      createServices(store);
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } = createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
     await tradeSync.runBuyAndInitialSl(
@@ -271,8 +286,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       openCount: 3,
       deployedCapital: 50000,
     });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
-      createServices(store);
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } = createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
     await tradeSync.runBuyAndInitialSl(
@@ -293,8 +307,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("skips non-cash (options) instruments", async () => {
     const store = createStore(baseCfg, { openCount: 0, deployedCapital: 0 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
-      createServices(store);
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } = createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[2]]);
 
     await tradeSync.runBuyAndInitialSl(
@@ -319,8 +332,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       deployedCapital: 0,
       existingIdempotencyKeys: ["buy:101"],
     });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
-      createServices(store);
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } = createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
     await tradeSync.runBuyAndInitialSl(
@@ -340,8 +352,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("places orders for all valid cash trades (skips options)", async () => {
     const store = createStore(baseCfg, { openCount: 0, deployedCapital: 0 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
-      createServices(store);
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } = createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg);
 
     await tradeSync.runBuyAndInitialSl(
@@ -364,8 +375,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("derives correct quantity from perTradeCapital and entry price", async () => {
     const store = createStore(baseCfg, { openCount: 0, deployedCapital: 0 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
-      createServices(store);
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } = createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
     await tradeSync.runBuyAndInitialSl(
@@ -386,8 +396,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("persists trade record with target and sl_trigger in Postgres", async () => {
     const store = createStore(baseCfg, { openCount: 0, deployedCapital: 0 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
-      createServices(store);
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } = createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
     await tradeSync.runBuyAndInitialSl(
@@ -420,8 +429,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("sends correct Forever Order request to Dhan", async () => {
     const store = createStore(baseCfg, { openCount: 0, deployedCapital: 0 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
-      createServices(store);
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } = createServices(store);
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
     await tradeSync.runBuyAndInitialSl(
@@ -451,8 +459,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("skips trade with zero entry price", async () => {
     const store = createStore(baseCfg, { openCount: 0, deployedCapital: 0 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
-      createServices(store);
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } = createServices(store);
     const zeroPrice = {
       ...activeApiResponse[0],
       id: 999,
@@ -478,8 +485,7 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("skips trade with missing sc_symbol", async () => {
     const store = createStore(baseCfg, { openCount: 0, deployedCapital: 0 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
-      createServices(store);
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } = createServices(store);
     const noSymbol = { ...activeApiResponse[0], id: 998, sc_symbol: "" };
     const tradeSync = new TradeSyncStub(baseCfg, [noSymbol]);
 
@@ -500,8 +506,9 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
 
   it("respects custom maxActiveTrades = 2", async () => {
     const store = createStore(baseCfg, { openCount: 2 });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
-      createServices(store, { maxActiveTrades: 2 });
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } = createServices(store, {
+      maxActiveTrades: 2,
+    });
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
     await tradeSync.runBuyAndInitialSl(
@@ -524,8 +531,9 @@ describe("runBuyAndInitialSl — cap enforcement (Postgres-only)", () => {
       openCount: 1,
       deployedCapital: 15000,
     });
-    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } =
-      createServices(store, { maxTradeCapital: 20000 });
+    const { dhan, qtyResolver, tsl, audit, instrumentLookup, configSvc } = createServices(store, {
+      maxTradeCapital: 20000,
+    });
     const tradeSync = new TradeSyncStub(baseCfg, [activeApiResponse[0]]);
 
     await tradeSync.runBuyAndInitialSl(

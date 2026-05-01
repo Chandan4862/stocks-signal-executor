@@ -75,11 +75,7 @@ export class AuditLogService {
 
     // 1. Always log to console
     const consoleFn =
-      level >= LogLevel.ERROR
-        ? console.error
-        : level >= LogLevel.WARN
-          ? console.warn
-          : console.log;
+      level >= LogLevel.ERROR ? console.error : level >= LogLevel.WARN ? console.warn : console.log;
     consoleFn(`[${label}] ${event}`, payload);
 
     // 2. Write to Postgres (skip for DEBUG)
@@ -110,38 +106,23 @@ export class AuditLogService {
   /*  Convenience methods                                                */
   /* ------------------------------------------------------------------ */
 
-  async debug(
-    event: LifecycleEvents,
-    payload: Record<string, any>,
-  ): Promise<void> {
+  async debug(event: LifecycleEvents, payload: Record<string, any>): Promise<void> {
     return this.record(event, payload, LogLevel.DEBUG);
   }
 
-  async info(
-    event: LifecycleEvents,
-    payload: Record<string, any>,
-  ): Promise<void> {
+  async info(event: LifecycleEvents, payload: Record<string, any>): Promise<void> {
     return this.record(event, payload, LogLevel.INFO);
   }
 
-  async warn(
-    event: LifecycleEvents,
-    payload: Record<string, any>,
-  ): Promise<void> {
+  async warn(event: LifecycleEvents, payload: Record<string, any>): Promise<void> {
     return this.record(event, payload, LogLevel.WARN);
   }
 
-  async error(
-    event: LifecycleEvents,
-    payload: Record<string, any>,
-  ): Promise<void> {
+  async error(event: LifecycleEvents, payload: Record<string, any>): Promise<void> {
     return this.record(event, payload, LogLevel.ERROR);
   }
 
-  async critical(
-    event: LifecycleEvents,
-    payload: Record<string, any>,
-  ): Promise<void> {
+  async critical(event: LifecycleEvents, payload: Record<string, any>): Promise<void> {
     return this.record(event, payload, LogLevel.CRITICAL);
   }
 

@@ -9,7 +9,7 @@ export class TSLService {
       incrementRs: number;
       initialSlPct: number;
       trailingStepPct: number;
-    }
+    },
   ) {}
 
   initialStopLoss(entryPrice: number): number {

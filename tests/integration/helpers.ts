@@ -12,10 +12,7 @@ import { Client } from "pg";
 import type { AppConfig } from "../../src/config/schema";
 import { StateStore } from "../../src/services/stateStore";
 import { AuditLogService } from "../../src/services/auditLogService";
-import {
-  DhanService,
-  PlaceOrderResponse,
-} from "../../src/services/dhanService";
+import { DhanService, PlaceOrderResponse } from "../../src/services/dhanService";
 
 // ─── Test Config ────────────────────────────────────────────────────────────
 

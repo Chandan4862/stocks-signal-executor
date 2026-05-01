@@ -158,9 +158,7 @@ describe("State Machine Integration", () => {
     expect(trade.exited_at).not.toBeNull();
 
     // Verify PnL recorded
-    const pnl = await store.pg.query(
-      "SELECT * FROM pnl_records WHERE trade_id = 5001",
-    );
+    const pnl = await store.pg.query("SELECT * FROM pnl_records WHERE trade_id = 5001");
     expect(pnl.rows).toHaveLength(1);
     expect(Number(pnl.rows[0].realized_pnl)).toBe((1660 - 1505) * 6);
   });
@@ -262,9 +260,7 @@ describe("State Machine Integration", () => {
     );
 
     // Dhan shows the forever order as triggered + child traded
-    dhanState.foreverOrders = [
-      { orderId: "FO_CLOSED", orderStatus: "TRIGGERED" },
-    ];
+    dhanState.foreverOrders = [{ orderId: "FO_CLOSED", orderStatus: "TRIGGERED" }];
     dhanState.regularOrders = [
       {
         algoId: "FO_CLOSED",
@@ -295,9 +291,7 @@ describe("State Machine Integration", () => {
        VALUES (5005, 'WIPRO', 'WIPRO', 'NSE', 'buy', 450, 20, 'ENTERED', '5555', 'FO_OLD', NOW() - INTERVAL '1 day')`,
     );
     // Mark as processed in idempotency
-    await store.pg.query(
-      `INSERT INTO idempotency (action_key) VALUES ('buy:5005')`,
-    );
+    await store.pg.query(`INSERT INTO idempotency (action_key) VALUES ('buy:5005')`);
 
     await store.pg.query(
       `INSERT INTO instrument_list_nse_eq (security_id, underlying_symbol, instrument_type, series, exch_id)
@@ -345,22 +339,13 @@ describe("State Machine Integration", () => {
        VALUES (5006, 'SBIN', 'SBIN', 'NSE', 'buy', 800, 12, 'AWAITING_ENTRY', '6666', 'FO_SBIN', 5006)`,
     );
 
-    const closedTrades = [
-      { id: 5006, sc_symbol: "SBIN", exit_price: 810, cmp: 810 },
-    ];
+    const closedTrades = [{ id: 5006, sc_symbol: "SBIN", exit_price: 810, cmp: 810 }];
 
-    await tradeReconciliation.processClosedTrades(
-      store,
-      dhan,
-      audit,
-      closedTrades as any,
-    );
+    await tradeReconciliation.processClosedTrades(store, dhan, audit, closedTrades as any);
 
     const trade = await getTradeState(store, 5006);
     expect(trade.state).toBe("CLOSED");
-    expect(
-      dhan.calls.filter((c) => c.method === "cancelForeverOrder"),
-    ).toHaveLength(1);
+    expect(dhan.calls.filter((c) => c.method === "cancelForeverOrder")).toHaveLength(1);
     expect(dhan.calls.filter((c) => c.method === "placeOrder")).toHaveLength(0); // no sell
   });
 
@@ -377,25 +362,16 @@ describe("State Machine Integration", () => {
        VALUES (5007, 'AXISBANK', 'AXISBANK', 'NSE', 'buy', 1050, 9, 'ENTERED', '7777', 5007, NOW() - INTERVAL '3 days')`,
     );
 
-    const closedTrades = [
-      { id: 5007, sc_symbol: "AXISBANK", exit_price: 1100, cmp: 1100 },
-    ];
+    const closedTrades = [{ id: 5007, sc_symbol: "AXISBANK", exit_price: 1100, cmp: 1100 }];
 
-    await tradeReconciliation.processClosedTrades(
-      store,
-      dhan,
-      audit,
-      closedTrades as any,
-    );
+    await tradeReconciliation.processClosedTrades(store, dhan, audit, closedTrades as any);
 
     const trade = await getTradeState(store, 5007);
     expect(trade.state).toBe("CLOSED_BY_ANALYST");
     expect(trade.sell_order_id).toBe("SELL_456");
     expect(Number(trade.exit_price)).toBe(1100);
 
-    const pnl = await store.pg.query(
-      "SELECT * FROM pnl_records WHERE trade_id = 5007",
-    );
+    const pnl = await store.pg.query("SELECT * FROM pnl_records WHERE trade_id = 5007");
     expect(pnl.rows).toHaveLength(1);
     expect(Number(pnl.rows[0].realized_pnl)).toBe((1100 - 1050) * 9);
   });
@@ -536,9 +512,7 @@ describe("State Machine Integration", () => {
        VALUES (5012, 'MARUTI', 'MARUTI', 'NSE', 'buy', 12000, 1, 'AWAITING_ENTRY', '1212', 'FO_MARUTI')`,
     );
 
-    dhanState.foreverOrders = [
-      { orderId: "FO_MARUTI", orderStatus: "CANCELLED" },
-    ];
+    dhanState.foreverOrders = [{ orderId: "FO_MARUTI", orderStatus: "CANCELLED" }];
 
     await tradeMonitor.monitorPendingEntries(store, dhan, audit);
 
@@ -584,12 +558,7 @@ describe("State Machine Integration", () => {
 
     const closedTrades = [{ id: 5013, sc_symbol: "BAJAJ", exit_price: 7600 }];
 
-    await tradeReconciliation.processClosedTrades(
-      store,
-      dhan,
-      audit,
-      closedTrades as any,
-    );
+    await tradeReconciliation.processClosedTrades(store, dhan, audit, closedTrades as any);
 
     const trade = await getTradeState(store, 5013);
     expect(trade.state).toBe("CLOSED"); // still CLOSED despite cancel failure

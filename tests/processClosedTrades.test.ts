@@ -50,10 +50,7 @@ class DhanStub extends DhanService {
 
 // ─── StoreStub ──────────────────────────────────────────────────────────────
 // Configurable: provide `localTrades` map of id → trade row to simulate DB state.
-function createStore(
-  cfg: any,
-  localTrades: Record<number, any> = {},
-) {
+function createStore(cfg: any, localTrades: Record<number, any> = {}) {
   const executedQueries: { sql: string; params: any[] }[] = [];
 
   class StoreStub extends StateStore {
@@ -77,7 +74,8 @@ function createStore(
           if (sql.includes("FROM trades") && sql.includes("symbol") && sql.includes("SELECT")) {
             const symbol = params[0];
             const match = Object.values(localTrades).find(
-              (t: any) => t.symbol === symbol && (t.state === "AWAITING_ENTRY" || t.state === "ENTERED"),
+              (t: any) =>
+                t.symbol === symbol && (t.state === "AWAITING_ENTRY" || t.state === "ENTERED"),
             );
             if (match) return { rows: [match] } as any;
             return { rows: [] } as any;
