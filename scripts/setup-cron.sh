@@ -8,6 +8,7 @@ USER_NAME="${SUDO_USER:-$USER}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BACKUP_SCRIPT="${PROJECT_DIR}/scripts/backup.sh"
+LOG_DIR="${PROJECT_DIR}/backups"
 
 echo "=== Setting up daily backup cron ==="
 
@@ -17,8 +18,9 @@ if [ ! -f "$BACKUP_SCRIPT" ]; then
 fi
 
 chmod +x "$BACKUP_SCRIPT"
+mkdir -p "$LOG_DIR"
 
-CRON_ENTRY="0 20 * * * ${BACKUP_SCRIPT} >> ${PROJECT_DIR}/backups/cron.log 2>&1"
+CRON_ENTRY="0 20 * * * /bin/bash ${BACKUP_SCRIPT} >> ${LOG_DIR}/cron.log 2>&1"
 
 # Add cron job (avoids duplicate entries)
 (crontab -u "$USER_NAME" -l 2>/dev/null | grep -v "$BACKUP_SCRIPT"; echo "$CRON_ENTRY") \
