@@ -74,12 +74,28 @@ export interface MockPosition {
   dhanClientId: string;
 }
 
+export interface MockIpState {
+  primaryIP: string | null;
+  secondaryIP: string | null;
+  detectedIP: string;
+  modifyDatePrimary: string | null;
+  modifyDateSecondary: string | null;
+}
+
 class StateStore {
   orders: Map<string, MockOrder> = new Map();
   foreverOrders: Map<string, MockForeverOrder> = new Map();
   holdings: Map<string, MockHolding> = new Map();
   positions: Map<string, MockPosition> = new Map();
   idempotencyKeys: Set<string> = new Set();
+
+  ipState: MockIpState = {
+    primaryIP: "1.2.3.4",
+    secondaryIP: null,
+    detectedIP: "1.2.3.4",
+    modifyDatePrimary: new Date(Date.now() - 86400 * 1000).toISOString().split("T")[0], // yesterday
+    modifyDateSecondary: new Date(Date.now() - 86400 * 1000).toISOString().split("T")[0],
+  };
 
   private nextOrderId = 100001;
 
@@ -152,6 +168,13 @@ class StateStore {
     this.positions.clear();
     this.idempotencyKeys.clear();
     this.nextOrderId = 100001;
+    this.ipState = {
+      primaryIP: "1.2.3.4",
+      secondaryIP: null,
+      detectedIP: "1.2.3.4",
+      modifyDatePrimary: new Date(Date.now() - 86400 * 1000).toISOString().split("T")[0],
+      modifyDateSecondary: new Date(Date.now() - 86400 * 1000).toISOString().split("T")[0],
+    };
   }
 }
 

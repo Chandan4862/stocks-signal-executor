@@ -248,9 +248,7 @@ export class DhanService {
       this.currentToken = token;
       const baseURL = process.env.DHAN_API_BASE_URL
         ? `${process.env.DHAN_API_BASE_URL}/v2`
-        : this.cfg.env === "development"
-          ? "https://sandbox.dhan.co/v2"
-          : "https://api.dhan.co/v2";
+        : "https://api.dhan.co/v2";
 
       this.http = axios.create({
         baseURL,

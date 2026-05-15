@@ -15,6 +15,7 @@ import { createMonitorWorker } from "./workers/monitorWorker";
 import { createReconciliationWorker } from "./workers/reconciliationWorker";
 import { createNotificationWorker } from "./workers/notificationWorker";
 import { createTokenRenewalWorker } from "./workers/tokenRenewalWorker";
+import { createIpSyncWorker } from "./workers/ipSyncWorker";
 import type { NotificationJob } from "./queues/jobs";
 
 async function main() {
@@ -44,6 +45,7 @@ async function main() {
   const reconConn = createBullMQConnection(config);
   const notifConn = createBullMQConnection(config);
   const tokenConn = createBullMQConnection(config);
+  const ipSyncConn = createBullMQConnection(config);
   const queueConn = createBullMQConnection(config);
   console.log("[Worker] Redis connections created");
 
@@ -76,6 +78,7 @@ async function main() {
       config.telegram.userChatId,
     ),
     createTokenRenewalWorker(tokenConn, config, pool),
+    createIpSyncWorker(ipSyncConn, config, pool, notificationQueue),
   ];
 
   console.log(`[Worker] ${workers.length} workers started`);
@@ -98,6 +101,7 @@ async function main() {
     reconConn.disconnect();
     notifConn.disconnect();
     tokenConn.disconnect();
+    ipSyncConn.disconnect();
     queueConn.disconnect();
 
     console.log("[Worker] Shutdown complete");

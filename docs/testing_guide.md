@@ -382,3 +382,72 @@ redcli HGETALL "bull:trade-execution:<jobId>"
 redcli GET "token:2"
 redcli TTL "token:2"
 ```
+
+---
+
+## Phase 6: IP Whitelisting Integration
+
+### What it does
+
+The IP whitelist system ensures that your infrastructure's IP address is actively registered with Dhan before any API requests (orders, holdings, etc.) are processed. It features an inline sync during `/enable`, manual syncs, and defensive gating.
+
+### Step 6A: View Current IP Status
+
+Send `/ip_status` in Telegram.
+
+**Expected response:**
+
+```
+📡 IP Whitelist Status
+
+No IP whitelist data yet.
+Run /ip_sync to perform initial sync with Dhan.
+```
+
+_(If you have already synced via `/enable`, it will show the IP details and the cooldown periods.)_
+
+### Step 6B: Trigger Manual Sync
+
+Send `/ip_sync` in Telegram.
+
+**Expected response:**
+
+```
+🔄 IP sync job enqueued.
+Worker will check and fix your IP whitelist shortly.
+```
+
+### Step 6C: Verify DB & Cache
+
+Check the database to see the sync result:
+
+```bash
+dbcli "SELECT user_id, primary_ip, detected_ip, ip_match_status, orders_allowed FROM ip_whitelist WHERE user_id = 2;"
+```
+
+Send `/ip_status` again to view the populated state. It should show:
+
+- `Orders Allowed: ✅ Yes`
+- `IP Match: PRIMARY_MATCH` (or `SECONDARY_MATCH`)
+
+### Step 6D: Trigger Admin Bulk Sync
+
+Send `/ip_whitelist_all` in Telegram (must be sent from the configured admin chat ID).
+
+**Expected response:**
+
+```
+✅ Enqueued 1 IP sync job(s) for active users.
+Worker will process each user's IP whitelist.
+```
+
+### Step 6E: Verify IP Gate Execution
+
+Whenever a worker (like trade, monitor, or reconcile) executes, it will first hit `assertOrdersAllowed` in the `IpWhitelistService`.
+You can verify this by checking Redis for the cached IP status:
+
+```bash
+redcli GET "ip:status:2"
+```
+
+If the cached IP status shows `"ordersAllowed": true`, all order operations will seamlessly continue without making extra API calls.

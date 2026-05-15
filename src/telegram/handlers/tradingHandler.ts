@@ -7,6 +7,7 @@
 */
 
 import type { Queue } from "bullmq";
+import type { Pool } from "pg";
 import type { UserContext } from "../middleware/userResolver";
 import type { UserRepository } from "../../modules/user/userRepository";
 import type Redis from "ioredis";
@@ -14,6 +15,8 @@ import type { TradeExecutionJob, TradeMonitorJob, ReconciliationJob } from "../.
 import { makeJobId, todayKey } from "../../queues/jobs";
 import { QUEUE_NAMES } from "../../queues/queueRegistry";
 import { TradeSyncService } from "../../services/tradeSyncService";
+import { IpWhitelistService } from "../../services/ipWhitelistService";
+import { AuditLogService } from "../../services/auditLogService";
 import type { AppConfig } from "../../config/schema";
 import { DateTime } from "luxon";
 
@@ -23,6 +26,7 @@ export class TradingHandler {
     private redis: Redis,
     private queues: Map<string, Queue>,
     private cfg: AppConfig,
+    private pool: Pool,
   ) {}
 
   /** /enable — Start auto-trading */
@@ -51,10 +55,42 @@ export class TradingHandler {
     }
 
     await this.userRepo.setTradingEnabled(user.id, true);
-    await ctx.reply(
-      "🟢 Auto-trading ENABLED.\n" +
-        "You'll receive signals starting next market open (09:20 IST).",
-    );
+
+    // Sync IP whitelist inline
+    if (token && user.dhan_client_id) {
+      try {
+        const baseUrl = process.env.DHAN_API_BASE_URL
+          ? `${process.env.DHAN_API_BASE_URL}/v2`
+          : "https://api.dhan.co/v2";
+        const audit = new AuditLogService(this.pool, null, user.id);
+        const ipService = new IpWhitelistService(this.pool, this.redis, audit);
+        const result = await ipService.syncUserIp(user.id, user.dhan_client_id, token, baseUrl);
+
+        if (result.ordersAllowed) {
+          await ctx.reply(
+            `🟢 Auto-trading ENABLED.\n` +
+              `✅ IP whitelisted (${result.action === "IP_SET" ? `set on ${result.slot}` : "already matched"}).\n` +
+              `You'll receive signals starting next market open (09:20 IST).`,
+          );
+        } else {
+          await ctx.reply(
+            `🟢 Auto-trading ENABLED.\n` +
+              `⚠️ IP whitelist issue: ${result.error ?? "unknown"}\n` +
+              `Orders will be blocked until IP is resolved. Run /ip_status for details.`,
+          );
+        }
+      } catch {
+        await ctx.reply(
+          `🟢 Auto-trading ENABLED.\n` +
+            `⚠️ Could not verify IP whitelist — will be checked before first order.`,
+        );
+      }
+    } else {
+      await ctx.reply(
+        "🟢 Auto-trading ENABLED.\n" +
+          "You'll receive signals starting next market open (09:20 IST).",
+      );
+    }
   }
 
   /** /disable — Pause auto-trading */

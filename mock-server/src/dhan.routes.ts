@@ -233,6 +233,64 @@ router.post("/app/generateAccessToken", (req, res) => {
   res.json({ accessToken, expiryTime });
 });
 
+// ─── IP Whitelist ─────────────────────────────────────────────────────
+
+router.get("/v2/ip/getIP", (req, res) => {
+  const token = req.headers["access-token"];
+  if (!token) {
+    return res.status(401).json({ errorCode: "DH-902", message: "Missing access token" });
+  }
+
+  const { ipState } = store;
+  let ipMatchStatus = "NO_MATCH";
+  let ordersAllowed = false;
+
+  if (ipState.detectedIP === ipState.primaryIP) {
+    ipMatchStatus = "PRIMARY_MATCH";
+    ordersAllowed = true;
+  } else if (ipState.detectedIP === ipState.secondaryIP) {
+    ipMatchStatus = "SECONDARY_MATCH";
+    ordersAllowed = true;
+  }
+
+  res.json({
+    modifyDatePrimary: ipState.modifyDatePrimary,
+    modifyDateSecondary: ipState.modifyDateSecondary,
+    primaryIP: ipState.primaryIP,
+    secondaryIP: ipState.secondaryIP,
+    detectedIP: ipState.detectedIP,
+    ipMatchStatus,
+    ordersAllowed,
+  });
+});
+
+router.post("/v2/ip/setIP", (req, res) => {
+  const token = req.headers["access-token"];
+  if (!token) {
+    return res.status(401).json({ errorCode: "DH-902", message: "Missing access token" });
+  }
+
+  const { dhanClientId, ip, ipFlag } = req.body;
+  if (!dhanClientId || !ip || !ipFlag) {
+    return res.status(400).json({ errorCode: "DH-901", message: "Missing required parameters" });
+  }
+
+  const nextModifyDate = new Date(Date.now() + 7 * 86400 * 1000).toISOString().split("T")[0];
+
+  if (ipFlag === "PRIMARY") {
+    store.ipState.primaryIP = ip;
+    store.ipState.modifyDatePrimary = nextModifyDate;
+  } else if (ipFlag === "SECONDARY") {
+    store.ipState.secondaryIP = ip;
+    store.ipState.modifyDateSecondary = nextModifyDate;
+  } else {
+    return res.status(400).json({ errorCode: "DH-901", message: "Invalid ipFlag" });
+  }
+
+  console.log(`  🌐 IP updated: ${ipFlag} -> ${ip} for client ${dhanClientId}`);
+  res.json({ message: "IP saved successfully", status: "SUCCESS" });
+});
+
 // ─── Admin / Debug ────────────────────────────────────────────────────
 
 /** POST /admin/trigger-forever/:orderId — Simulate a forever order triggering */

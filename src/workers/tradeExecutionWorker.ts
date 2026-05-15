@@ -19,6 +19,7 @@ import { QUEUE_NAMES } from "../queues/queueRegistry";
 import { DhanService } from "../services/dhanService";
 import { TradeEntryService } from "../services/tradeEntryService";
 import { AuditLogService } from "../services/auditLogService";
+import { IpWhitelistService } from "../services/ipWhitelistService";
 import { StateStore } from "../services/stateStore";
 import { ConfigService } from "../services/configService";
 import { UserRepository } from "../modules/user/userRepository";
@@ -55,6 +56,13 @@ export function createTradeExecutionWorker(
       const audit = new AuditLogService(pool, notificationQueue, userId);
       const dhan = new DhanService({ ...cfg, dhan: { clientId: user.dhan_client_id } }, audit);
       dhan.setToken(token);
+
+      // 3.5. IP whitelist gate — block if orders not allowed
+      const baseUrl = process.env.DHAN_API_BASE_URL
+        ? `${process.env.DHAN_API_BASE_URL}/v2`
+        : `https://api.dhan.co/v2`;
+      const ipService = new IpWhitelistService(pool, connection, audit);
+      await ipService.assertOrdersAllowed(userId, token, baseUrl);
 
       // 4. Create a user-scoped StateStore wrapper
       const store = new StateStore(cfg);

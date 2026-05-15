@@ -14,6 +14,7 @@ export const QUEUE_NAMES = {
   TRADE_RECONCILIATION: "trade-reconciliation",
   NOTIFICATION: "notification",
   TOKEN_RENEWAL: "token-renewal",
+  IP_SYNC: "ip-sync",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
@@ -59,6 +60,12 @@ export const DEFAULT_JOB_OPTIONS: Record<
     removeOnFail: { age: 604800 },
   },
   [QUEUE_NAMES.TOKEN_RENEWAL]: {
+    attempts: 3,
+    backoff: { type: "exponential", delay: 5000 },
+    removeOnComplete: { age: 86400 },
+    removeOnFail: { age: 604800 },
+  },
+  [QUEUE_NAMES.IP_SYNC]: {
     attempts: 3,
     backoff: { type: "exponential", delay: 5000 },
     removeOnComplete: { age: 86400 },

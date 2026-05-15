@@ -49,6 +49,12 @@ export interface TokenRenewalJob extends BaseJob {
   action: "PROACTIVE_RENEW" | "GENERATE_TOTP" | "VALIDATE";
 }
 
+/** IP whitelist sync: one job per user */
+export interface IpSyncJob extends BaseJob {
+  action: "IP_SYNC" | "IP_FIX";
+  dhanClientId: string;
+}
+
 // ─── Job ID Helpers ────────────────────────────────────────────────
 
 /**

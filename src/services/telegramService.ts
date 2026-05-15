@@ -16,6 +16,7 @@ import type { UserResolverMiddleware, UserContext } from "../telegram/middleware
 import type { OnboardingHandler } from "../telegram/handlers/onboardingHandler";
 import type { TradingHandler } from "../telegram/handlers/tradingHandler";
 import type { ConfigHandler } from "../telegram/handlers/configHandler";
+import type { IpHandler } from "../telegram/handlers/ipHandler";
 
 export class TelegramService {
   private bot: Telegraf;
@@ -47,8 +48,9 @@ export class TelegramService {
     onboarding: OnboardingHandler,
     trading: TradingHandler,
     config: ConfigHandler,
+    ip?: IpHandler,
   ): void {
-    this.registerMultiUserHandlers(userResolver, onboarding, trading, config);
+    this.registerMultiUserHandlers(userResolver, onboarding, trading, config, ip);
   }
 
   /* ------------------------------------------------------------------ */
@@ -152,6 +154,7 @@ export class TelegramService {
     onboarding: OnboardingHandler,
     trading: TradingHandler,
     config: ConfigHandler,
+    ip?: IpHandler,
   ): void {
     // User resolver middleware — attaches user to ctx.state for all subsequent handlers
     this.bot.use(userResolver.middleware() as any);
@@ -185,6 +188,15 @@ export class TelegramService {
 
     // Config command (multi-user)
     this.bot.command("config", (ctx) => config.handleConfig(ctx as unknown as UserContext));
+
+    // IP whitelist commands (multi-user)
+    if (ip) {
+      this.bot.command("ip_status", (ctx) => ip.handleIpStatus(ctx as unknown as UserContext));
+      this.bot.command("ip_sync", (ctx) => ip.handleIpSync(ctx as unknown as UserContext));
+      this.bot.command("ip_whitelist_all", (ctx) =>
+        ip.handleIpWhitelistAll(ctx as unknown as UserContext),
+      );
+    }
   }
 
   /* ------------------------------------------------------------------ */

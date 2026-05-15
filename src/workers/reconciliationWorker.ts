@@ -18,6 +18,7 @@ import { QUEUE_NAMES } from "../queues/queueRegistry";
 import { DhanService } from "../services/dhanService";
 import { TradeReconciliationService } from "../services/tradeReconciliationService";
 import { AuditLogService } from "../services/auditLogService";
+import { IpWhitelistService } from "../services/ipWhitelistService";
 import { StateStore } from "../services/stateStore";
 import { UserRepository } from "../modules/user/userRepository";
 import type { ClosedTrade } from "../models/closedTrade";
@@ -56,6 +57,13 @@ export function createReconciliationWorker(
       const audit = new AuditLogService(pool, notificationQueue, userId);
       const dhan = new DhanService({ ...cfg, dhan: { clientId: user.dhan_client_id } }, audit);
       dhan.setToken(token);
+
+      // 3.5. IP whitelist gate
+      const baseUrl = process.env.DHAN_API_BASE_URL
+        ? `${process.env.DHAN_API_BASE_URL}/v2`
+        : "https://api.dhan.co/v2";
+      const ipService = new IpWhitelistService(pool, connection, audit);
+      await ipService.assertOrdersAllowed(userId, token, baseUrl);
 
       const store = new StateStore(cfg);
       (store as any).pool = pool;
