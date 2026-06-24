@@ -562,3 +562,12 @@ To github.com:Chandan4862/stocks-signal-executor.git
 [Tue Jun 23 20:00:01 UTC 2026] Starting Postgres backup...
 [Tue Jun 23 20:00:02 UTC 2026] Backup saved: /home/ubuntu/stocks-signal-executor/backups/db-2026-06-23_2000.sql.gz (328K)
 [Tue Jun 23 20:00:02 UTC 2026] Pruned old backups. 9 backup(s) retained.
+[main ebac6fa] backup: db-2026-06-23_2000
+ 2 files changed, 11 insertions(+)
+ create mode 100644 backups/db-2026-06-23_2000.sql.gz
+To github.com:Chandan4862/stocks-signal-executor.git
+   c24b695..ebac6fa  main -> main
+[Tue Jun 23 20:00:06 UTC 2026] Backup pushed to git.
+[Wed Jun 24 20:00:01 UTC 2026] Starting Postgres backup...
+[Wed Jun 24 20:00:02 UTC 2026] Backup saved: /home/ubuntu/stocks-signal-executor/backups/db-2026-06-24_2000.sql.gz (332K)
+[Wed Jun 24 20:00:02 UTC 2026] Pruned old backups. 8 backup(s) retained.
