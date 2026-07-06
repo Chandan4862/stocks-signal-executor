@@ -19,6 +19,8 @@ services:
       PG_PASSWORD: ${PG_PASSWORD:-postgres}
       REDIS_HOST: stock_redis
       REDIS_PORT: 6379
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY}
+      POLLING_INTERVAL_MS: ${POLLING_INTERVAL_MS:-15000}
       DATABASE_URL: postgres://${PG_USER:-postgres}:${PG_PASSWORD:-postgres}@stock_postgres:5432/${PG_DATABASE:-stocks_executor}
     command:
       [
@@ -55,6 +57,7 @@ services:
       PG_PASSWORD: ${PG_PASSWORD:-postgres}
       REDIS_HOST: stock_redis
       REDIS_PORT: 6379
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY}
     command: ["node", "dist/workerMain.js"]
     depends_on:
       stock_postgres:
