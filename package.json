@@ -18,6 +18,9 @@
     "migrate:down": "node-pg-migrate down --migration-file-language sql --migrations-dir db/migrations",
     "migrate:create": "node-pg-migrate create --migration-file-language sql --migrations-dir db/migrations",
     "script:fetch-instruments": "ts-node src/scripts/fetchInstruments.ts",
+    "test:load:seed": "ts-node src/test_scripts/seedLoadTest.ts",
+    "test:load:trigger": "ts-node src/test_scripts/loadTestTrigger.ts",
+    "test:load:monitor": "ts-node src/test_scripts/monitorQueues.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "prepare": "husky"
