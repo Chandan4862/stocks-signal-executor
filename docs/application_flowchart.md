@@ -259,7 +259,7 @@ sequenceDiagram
 ### Trade Entry Detail Flow
 
 ```
-executeTradeScan()
+enqueueTradeEntry()
 │
 ├── 1. Check marketClosedToday → skip if true
 │

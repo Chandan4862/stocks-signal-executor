@@ -143,7 +143,7 @@ export class Scheduler {
 
   async runTradeScan(): Promise<string> {
     try {
-      await this.executeTradeScan();
+      await this.enqueueTradeEntry();
       return "✅ Trade scan completed — jobs enqueued for all active users.";
     } catch (err: any) {
       return `❌ Trade scan failed: ${err?.message ?? "unknown error"}`;
@@ -182,7 +182,7 @@ export class Scheduler {
   /*  Signal Fanout: Fetch signals → enqueue per-user trade-exec jobs    */
   /* ------------------------------------------------------------------ */
 
-  private async executeTradeScan(): Promise<void> {
+  private async enqueueTradeEntry(): Promise<void> {
     if (this.marketClosedToday) {
       console.log("  ⏸ Trade scan skipped (market closed today)");
       return;
@@ -449,7 +449,7 @@ export class Scheduler {
 
   private scheduleTradeScan(): void {
     this.tradeScanTimer = this.scheduleAtIST("09:20", async () => {
-      await this.executeTradeScan().catch(() => {});
+      await this.enqueueTradeEntry().catch(() => {});
       this.scheduleTradeScan();
     });
     this.logSchedule("Trade scan", "09:20");

@@ -573,7 +573,7 @@ Redis serves two distinct roles:
 ### Current: Direct Execution
 
 ```
-09:20 → Scheduler.executeTradeScan()    → runs inline, single user
+09:20 → Scheduler.enqueueTradeEntry()    → runs inline, single user
 10:00 → Scheduler.executePendingEntry() → runs inline, single user
 ```
 
