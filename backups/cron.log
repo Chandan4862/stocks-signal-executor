@@ -1981,3 +1981,14 @@ To github.com:Chandan4862/stocks-signal-executor.git
 [Thu Nov 12 20:00:01 UTC 2026] Starting Postgres backup...
 [Thu Nov 12 20:00:03 UTC 2026] Backup saved: /home/ubuntu/stocks-signal-executor/backups/db-2026-11-12_2000.sql.gz (540K)
 [Thu Nov 12 20:00:03 UTC 2026] Pruned old backups. 9 backup(s) retained.
+[main 1200f29] backup: db-2026-11-12_2000
+ 3 files changed, 10 insertions(+)
+ delete mode 100644 backups/db-2026-11-03_2000.sql.gz
+ create mode 100644 backups/db-2026-11-12_2000.sql.gz
+Warning: Permanently added the ECDSA host key for IP address '4.187.247.160' to the list of known hosts.
+To github.com:Chandan4862/stocks-signal-executor.git
+   fc34b82..1200f29  main -> main
+[Thu Nov 12 20:00:07 UTC 2026] Backup pushed to git.
+[Fri Nov 13 20:00:01 UTC 2026] Starting Postgres backup...
+[Fri Nov 13 20:00:02 UTC 2026] Backup saved: /home/ubuntu/stocks-signal-executor/backups/db-2026-11-13_2000.sql.gz (540K)
+[Fri Nov 13 20:00:02 UTC 2026] Pruned old backups. 9 backup(s) retained.
