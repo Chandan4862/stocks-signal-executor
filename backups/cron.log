@@ -2104,3 +2104,18 @@ To github.com:Chandan4862/stocks-signal-executor.git
 [Tue Nov 24 20:00:01 UTC 2026] Starting Postgres backup...
 [Tue Nov 24 20:00:03 UTC 2026] Backup saved: /home/ubuntu/stocks-signal-executor/backups/db-2026-11-24_2000.sql.gz (552K)
 [Tue Nov 24 20:00:03 UTC 2026] Pruned old backups. 8 backup(s) retained.
+[main 6abc248] backup: db-2026-11-24_2000
+ 4 files changed, 10 insertions(+)
+ delete mode 100644 backups/db-2026-11-15_2000.sql.gz
+ delete mode 100644 backups/db-2026-11-16_2000.sql.gz
+ create mode 100644 backups/db-2026-11-24_2000.sql.gz
+git@github.com: Permission denied (publickey).
+fatal: Could not read from remote repository.
+
+Please make sure you have the correct access rights
+and the repository exists.
+[Tue Nov 24 20:00:07 UTC 2026] Git push failed.
+[Tue Nov 24 20:00:07 UTC 2026] Backup pushed to git.
+[Wed Nov 25 20:00:01 UTC 2026] Starting Postgres backup...
+[Wed Nov 25 20:00:03 UTC 2026] Backup saved: /home/ubuntu/stocks-signal-executor/backups/db-2026-11-25_2000.sql.gz (552K)
+[Wed Nov 25 20:00:03 UTC 2026] Pruned old backups. 8 backup(s) retained.
